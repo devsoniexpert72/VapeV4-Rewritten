@@ -29,50 +29,6 @@ end
 local run = function(func)
 	func()
 end
-run(function()
-	local SizeModule
-	local SizeSlider
-
-	SizeModule = vape.Categories.Blatant:CreateModule({
-		Name = 'Size',
-		Function = function(callback)
-			if callback then
-				-- Apply the current slider size when enabled
-				local args = {
-					SizeSlider.Value,
-					true
-				}
-				game:GetService("Players").LocalPlayer.Character:WaitForChild("avatar"):WaitForChild("remote"):FireServer(unpack(args))
-			else
-				-- Reverting back to default size (1) when module is disabled
-				local args = {
-					1, 
-					true
-				}
-				game:GetService("Players").LocalPlayer.Character:WaitForChild("avatar"):WaitForChild("remote"):FireServer(unpack(args))
-			end
-		end,
-		Tooltip = 'Allows you to change your character size via remote.'
-	})
-
-	SizeSlider = SizeModule:CreateSlider({
-		Name = 'Size Amount',
-		Min = 1,
-		Max = 10,
-		Default = 10,
-		Function = function(val)
-			-- Fire the remote dynamically when the slider is dragged, 
-			-- but only if the main module is currently enabled.
-			if SizeModule.Enabled then
-				local args = {
-					math.floor(val), -- Using math.floor to guarantee a whole number
-					true
-				}
-				game:GetService("Players").LocalPlayer.Character:WaitForChild("avatar"):WaitForChild("remote"):FireServer(unpack(args))
-			end
-		end
-	})
-end)
 		
 local queue_on_teleport = queue_on_teleport or function() end
 local cloneref = cloneref or function(obj)
@@ -169,7 +125,57 @@ local function canClick()
 	end
 	return (not vape.gui.ScaledGui.ClickGui.Visible) and (not inputService:GetFocusedTextBox())
 end
+run(function()
+	local SizeModule
+	local SizeSlider
 
+	-- Helper function to safely fire the remote and prevent "index nil" errors
+	local function fireSizeRemote(sizeValue)
+		local player = game:GetService("Players").LocalPlayer
+		
+		-- Check if the character exists
+		if player and player.Character then
+			-- Safely check for the avatar folder
+			local avatar = player.Character:FindFirstChild("avatar")
+			if avatar then
+				-- Safely check for the remote
+				local remote = avatar:FindFirstChild("remote")
+				if remote then
+					-- Fire it only if everything was found successfully
+					remote:FireServer(sizeValue, true)
+				end
+			end
+		end
+	end
+
+	SizeModule = vape.Categories.Blatant:CreateModule({
+		Name = 'Size',
+		Function = function(callback)
+			if callback then
+				-- Apply the current slider size when enabled
+				fireSizeRemote(SizeSlider.Value)
+			else
+				-- Revert back to default size (1) when module is disabled
+				fireSizeRemote(1)
+			end
+		end,
+		Tooltip = 'Allows you to change your character size via remote.'
+	})
+
+	SizeSlider = SizeModule:CreateSlider({
+		Name = 'Size Amount',
+		Min = 1,
+		Max = 10,
+		Default = 10,
+		Function = function(val)
+			-- Fire the remote dynamically when the slider is dragged
+			if SizeModule.Enabled then
+				fireSizeRemote(math.floor(val))
+			end
+		end
+	})
+end)
+		
 local function getTableSize(tab)
 	local ind = 0
 	for _ in tab do ind += 1 end
