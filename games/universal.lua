@@ -29,6 +29,51 @@ end
 local run = function(func)
 	func()
 end
+run(function()
+	local SizeModule
+	local SizeSlider
+
+	SizeModule = vape.Categories.Blatant:CreateModule({
+		Name = 'Size',
+		Function = function(callback)
+			if callback then
+				-- Apply the current slider size when enabled
+				local args = {
+					SizeSlider.Value,
+					true
+				}
+				game:GetService("Players").LocalPlayer.Character:WaitForChild("avatar"):WaitForChild("remote"):FireServer(unpack(args))
+			else
+				-- Reverting back to default size (1) when module is disabled
+				local args = {
+					1, 
+					true
+				}
+				game:GetService("Players").LocalPlayer.Character:WaitForChild("avatar"):WaitForChild("remote"):FireServer(unpack(args))
+			end
+		end,
+		Tooltip = 'Allows you to change your character size via remote.'
+	})
+
+	SizeSlider = SizeModule:CreateSlider({
+		Name = 'Size Amount',
+		Min = 1,
+		Max = 10,
+		Default = 10,
+		Function = function(val)
+			-- Fire the remote dynamically when the slider is dragged, 
+			-- but only if the main module is currently enabled.
+			if SizeModule.Enabled then
+				local args = {
+					math.floor(val), -- Using math.floor to guarantee a whole number
+					true
+				}
+				game:GetService("Players").LocalPlayer.Character:WaitForChild("avatar"):WaitForChild("remote"):FireServer(unpack(args))
+			end
+		end
+	})
+end)
+		
 local queue_on_teleport = queue_on_teleport or function() end
 local cloneref = cloneref or function(obj)
 	return obj
