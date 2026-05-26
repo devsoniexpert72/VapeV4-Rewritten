@@ -260,11 +260,7 @@ end)
 
 
 
-
-
-
-
-run(function()
+Run(function()
 	local BallLock, LockSmoothness
 	local AutoPlay
 	local AutoGoal
@@ -381,6 +377,9 @@ run(function()
 			else
 				vape:CreateNotification('Auto Goal', 'Disabled.', 3)
 				if hbConnection then hbConnection:Disconnect() end
+			end
+		end
+	})
 
 			-- AIM LOCK (Camera Lock)
 	AimLock = vape.Categories.Blatant:CreateModule({
@@ -419,10 +418,23 @@ run(function()
 	AimSmoothness = AimLock:CreateSlider({ Name = 'Smoothness', Min = 1, Max = 100, Default = 50, Function = function() end })
 	AimDistance = AimLock:CreateSlider({ Name = 'Max Distance', Min = 10, Max = 200, Default = 40, Function = function() end })
 end)
-											
+														
+
+
+	
+
+
+
+
+
+
+
+
+
+
+
+
 							
-
-
 run(function()
 	local BallESP, AutoplayESP, PathColorSlider
 	local renderConnectionESP, renderConnectionPath
