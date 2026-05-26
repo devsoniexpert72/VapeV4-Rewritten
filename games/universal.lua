@@ -148,7 +148,7 @@ run(function()
 							local ball = workspace:FindFirstChild("Balls") and workspace.Balls:FindFirstChild("Ball")
 							
 							if ball and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-								local ownership = ball:FindFirstChild("ownership")
+								local ownership = ball:FindFirstChild("Ownership")
 								
 								if ownership and tostring(ownership.Value) == player.Name then
 									vape:CreateNotification('Ball Delete', 'Ownership gained! Deleting ball...', 3)
@@ -301,6 +301,7 @@ run(function()
 	})
 	LockSmoothness = BallLock:CreateSlider({ Name = 'Smoothness', Min = 1, Max = 100, Default = 50, Function = function() end })
 
+											
 	-- AUTOPLAY
 	AutoPlay = vape.Categories.Blatant:CreateModule({
 		Name = 'Autoplay',
@@ -327,41 +328,45 @@ run(function()
 	})
 
 	-- AUTO GOAL
+		-- AUTO GOAL
 	AutoGoal = vape.Categories.Blatant:CreateModule({
 		Name = 'Auto Goal',
 		Function = function(callback)
 			if callback then
-				vape:CreateNotification('Auto Goal', 'Enabled: Scoring automatically.', 3)
+				vape:CreateNotification('Auto Goal', 'Enabled: Scanning Balls folder only.', 3)
 				local player = game:GetService("Players").LocalPlayer
 				local teamName = player.Team and player.Team.Name or ""
 				local targetGoal = (teamName == "Home Team") and "AwayGoal" or "HomeGoal"
 
 				local function processAutoGoal()
 					local success, err = pcall(function()
-						local ball = workspace:FindFirstChild("Balls") and workspace.Balls:FindFirstChild("Ball")
+						local ballsFolder = workspace:FindFirstChild("Balls")
+						if not ballsFolder then return end
+						local ball = ballsFolder:FindFirstChild("Ball")
 						if not ball then return end
 
+						-- Spam ball remote
 						local startPosition = Vector3.new(-271.89, 6.25, -454.23)
 						local args = { [1] = ball, [2] = CFrame.new(startPosition, startPosition + (Vector3.new(1, 0, 0) * math.huge)), [3] = math.huge }
-						game:GetService("ReplicatedStorage"):WaitForChild("RE"):WaitForChild("React"):FireServer(unpack(args))
+						pcall(function()
+							game:GetService("ReplicatedStorage"):WaitForChild("RE"):WaitForChild("React"):FireServer(unpack(args))
+						end)
 
+						-- Teleport Unanchored Parts (Scans ONLY inside the Balls folder now)
 						local goal = workspace:FindFirstChild(targetGoal)
 						if player.Character and player.Character:FindFirstChild("Head") and goal then
 							local directionBehindGoal = (goal.CFrame.LookVector * -1)
 							local tpPos = goal.Position - (directionBehindGoal * 10)
 
-							for _, part in pairs(workspace:GetDescendants()) do
-								if part:IsA("BasePart") and not part.Anchored and not part:IsDescendantOf(player.Character) then
-									local validParts = {["Torso"]=1, ["Head"]=1, ["Right Arm"]=1, ["Left Arm"]=1, ["Right Leg"]=1, ["Left Leg"]=1, ["HumanoidRootPart"]=1}
-									if not validParts[part.Name] then
-										for _, child in pairs(part:GetChildren()) do
-											if child:IsA("BodyPosition") or child:IsA("BodyGyro") then child:Destroy() end
-										end
-										local force = Instance.new("BodyPosition")
-										force.Parent = part
-										force.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-										force.Position = tpPos
+							for _, part in pairs(ballsFolder:GetDescendants()) do
+								if part:IsA("BasePart") and not part.Anchored then
+									for _, child in pairs(part:GetChildren()) do
+										if child:IsA("BodyPosition") or child:IsA("BodyGyro") then child:Destroy() end
 									end
+									local force = Instance.new("BodyPosition")
+									force.Parent = part
+									force.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+									force.Position = tpPos
 								end
 							end
 						end
@@ -376,43 +381,77 @@ run(function()
 			else
 				vape:CreateNotification('Auto Goal', 'Disabled.', 3)
 				if hbConnection then hbConnection:Disconnect() end
+
+			-- AIM LOCK (Camera Lock)
+	AimLock = vape.Categories.Blatant:CreateModule({
+		Name = 'Aim Lock',
+		Function = function(callback)
+			if callback then
+				vape:CreateNotification('Aim Lock', 'Enabled: Camera tracking ball.', 3)
+				task.spawn(function()
+					local success, err = pcall(function()
+						local camera = game.Workspace.CurrentCamera
+						local player = game:GetService("Players").LocalPlayer
+						
+						while AimLock.Enabled do
+							local ball = workspace:FindFirstChild("Balls") and workspace.Balls:FindFirstChild("Ball")
+							if ball and player.Character and player.Character:FindFirstChild("PrimaryPart") then
+								local distance = (ball.Position - player.Character.PrimaryPart.Position).magnitude
+								
+								if distance <= AimDistance.Value then
+									local lookVector = (ball.Position - camera.CFrame.Position).unit
+									local targetCFrame = CFrame.new(camera.CFrame.Position, camera.CFrame.Position + lookVector)
+									
+									-- Lerping the camera for smoothness based on slider
+									camera.CFrame = camera.CFrame:Lerp(targetCFrame, AimSmoothness.Value / 100)
+								end
+							end
+							task.wait()
+						end
+					end)
+					if not success then vape:CreateNotification('Aim Lock Error', tostring(err), 5) end
+				end)
+			else
+				vape:CreateNotification('Aim Lock', 'Disabled.', 3)
 			end
 		end
 	})
+	AimSmoothness = AimLock:CreateSlider({ Name = 'Smoothness', Min = 1, Max = 100, Default = 50, Function = function() end })
+	AimDistance = AimLock:CreateSlider({ Name = 'Max Distance', Min = 10, Max = 200, Default = 40, Function = function() end })
 end)
 											
 							
 
 
 run(function()
-	local BallESP, AutoplayESP
+	local BallESP, AutoplayESP, PathColorSlider
 	local renderConnectionESP, renderConnectionPath
-	local ring
+	local highlightObj
 	local pathParts = {}
+	
+	-- Store path color state
+	local pathColor = {H = 1, S = 1, V = 1}
 
-	-- BALL ESP RING
+	-- BALL ESP (Highlight)
 	BallESP = vape.Categories.Render:CreateModule({
 		Name = 'Ball ESP',
 		Function = function(callback)
 			if callback then
-				vape:CreateNotification('Ball ESP', 'Enabled.', 3)
+				vape:CreateNotification('Ball ESP', 'Highlight Enabled.', 3)
 				local success, err = pcall(function()
-					ring = Instance.new("Part")
-					ring.Size = Vector3.new(30, 30, 30)
-					ring.Anchored = true
-					ring.CanCollide = false
-					ring.Transparency = 0.8
-					ring.Shape = Enum.PartType.Ball
-					ring.Color = Color3.new(1, 0.5, 0)
-					ring.Parent = workspace
+					highlightObj = Instance.new("Highlight")
+					highlightObj.FillColor = Color3.fromRGB(255, 128, 0) -- Orange
+					highlightObj.OutlineColor = Color3.fromRGB(255, 255, 255) -- White
+					highlightObj.FillTransparency = 0.5
+					highlightObj.OutlineTransparency = 0.1
+					highlightObj.Parent = game:GetService("CoreGui") -- Put in CoreGui to prevent deletion by workspace resets
 
 					renderConnectionESP = game:GetService("RunService").Heartbeat:Connect(function()
 						local ball = workspace:FindFirstChild("Balls") and workspace.Balls:FindFirstChild("Ball")
-						if ball and ring then
-							ring.Position = ball.Position
-							ring.Parent = workspace
-						elseif ring then
-							ring.Parent = nil
+						if ball and highlightObj then
+							highlightObj.Adornee = ball
+						elseif highlightObj then
+							highlightObj.Adornee = nil
 						end
 					end)
 				end)
@@ -420,12 +459,12 @@ run(function()
 			else
 				vape:CreateNotification('Ball ESP', 'Disabled.', 3)
 				if renderConnectionESP then renderConnectionESP:Disconnect() end
-				if ring then ring:Destroy() end
+				if highlightObj then highlightObj:Destroy() end
 			end
 		end
 	})
 
-	-- AUTOPLAY PATH
+	-- AUTOPLAY PATH (Dynamic & Colored)
 	AutoplayESP = vape.Categories.Render:CreateModule({
 		Name = 'Autoplay Path',
 		Function = function(callback)
@@ -433,7 +472,6 @@ run(function()
 				vape:CreateNotification('Autoplay Path', 'Enabled.', 3)
 				local success, err = pcall(function()
 					local player = game:GetService("Players").LocalPlayer
-					local numberOfParts = 20
 
 					local function createOrUpdatePath()
 						local ball = workspace:FindFirstChild("Balls") and workspace.Balls:FindFirstChild("Ball")
@@ -444,20 +482,31 @@ run(function()
 
 						local hrpPos = player.Character.HumanoidRootPart.Position
 						local direction = (ball.Position - hrpPos).unit
-						local distance = (ball.Position - hrpPos).magnitude / (numberOfParts + 1)
+						local distance = (ball.Position - hrpPos).magnitude
+						
+						-- Dynamic part generation based on distance (1 part every 4 studs)
+						local requiredParts = math.clamp(math.floor(distance / 4), 1, 100)
+						local distanceBetween = distance / (requiredParts + 1)
 
-						for i = 1, numberOfParts do
-							if not pathParts[i] then
-								local part = Instance.new("Part")
-								part.Size = Vector3.new(0.2, 0.2, 0.2)
-								part.Anchored = true
-								part.CanCollide = false
-								part.Material = Enum.Material.Neon
-								table.insert(pathParts, part)
+						-- Update existing or create new parts
+						for i = 1, math.max(requiredParts, #pathParts) do
+							if i <= requiredParts then
+								if not pathParts[i] then
+									local part = Instance.new("Part")
+									part.Size = Vector3.new(0.3, 0.3, 0.3)
+									part.Anchored = true
+									part.CanCollide = false
+									part.Material = Enum.Material.Neon
+									table.insert(pathParts, part)
+								end
+								pathParts[i].Position = hrpPos + direction * (distanceBetween * i)
+								pathParts[i].CFrame = CFrame.lookAt(pathParts[i].Position, ball.Position)
+								pathParts[i].Color = Color3.fromHSV(pathColor.H, pathColor.S, pathColor.V)
+								pathParts[i].Parent = workspace
+							else
+								-- Hide unused parts if distance decreases
+								if pathParts[i] then pathParts[i].Parent = nil end
 							end
-							pathParts[i].Position = hrpPos + direction * (distance * i)
-							pathParts[i].CFrame = CFrame.lookAt(pathParts[i].Position, ball.Position)
-							pathParts[i].Parent = workspace
 						end
 					end
 
@@ -472,7 +521,19 @@ run(function()
 			end
 		end
 	})
+
+	-- Path Color Picker
+	PathColorSlider = AutoplayESP:CreateColorSlider({
+		Name = 'Path Color',
+		Function = function(hue, sat, val)
+			pathColor.H = hue
+			pathColor.S = sat
+			pathColor.V = val
+		end
+	})
 end)
+														
+					
 
 
 													
