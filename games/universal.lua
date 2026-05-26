@@ -260,7 +260,7 @@ end)
 
 
 
-Run(function()
+run(function()
 	local BallLock, LockSmoothness
 	local AutoPlay
 	local AutoGoal
