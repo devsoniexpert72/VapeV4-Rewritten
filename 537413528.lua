@@ -197,6 +197,16 @@ vape:Clean(lplr.OnTeleport:Connect(function()
 	end
 end))
 
+
+
+--BABFT MODULE STARTS HERE
+
+loadstring(game:HttpGet("https://raw.githubusercontent.com/devsoniexpert72/VapeV4-Rewritten/refs/heads/main/additions/babft.lua"))()
+
+--Ends here
+
+
+
 local frictionTable, oldfrict, entitylib = {}, {}
 local function updateVelocity()
 	if getTableSize(frictionTable) > 0 then
