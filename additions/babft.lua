@@ -1,14 +1,14 @@
+-- Vape Library Initialization
 
--- Vape Library Initialization (Use shared.vape if injecting into an existing vape s
--- 1. Create the custom Category
 local babftCategory = vape:CreateCategory({
     Name = 'BABFT Tools',
-    Icon = 'rbxassetid://0', -- Replace with your desired icon if needed
+    Icon = 'rbxassetid://0', 
     Size = UDim2.fromOffset(16, 16)
 })
 
 -- UI Component Variables
 local autoBuilderModule
+local previewBuilderModule
 local fileDropdown
 local refreshButton
 local speedSlider
@@ -16,27 +16,160 @@ local useScaleToggle
 local usePaintToggle
 local usePropToggle
 
--- File Fetching Helper
+-- Offset Sliders for Preview & Building
+local offX, offY, offZ
+local rotX, rotY, rotZ
+
+-- Preview Globals
+local previewFolderName = "Blueprint_Preview"
+local previewFolder = workspace:FindFirstChild(previewFolderName) or Instance.new("Folder")
+previewFolder.Name = previewFolderName
+previewFolder.Parent = workspace
+local previewParts = {} -- Stores { part = Instance, baseCF = CFrame }
+
+-- Utility: Vape Notification Wrapper
+local function notify(title, text, duration, typeTheme)
+    if vape and vape.CreateNotification then
+        vape:CreateNotification(title, text, duration or 5, typeTheme or 'info')[span_0](start_span)[span_0](end_span)
+    end
+end
+
+-- Utility: Fetch Files
 local function getBuildFiles()
     local files = {}
-    if listfiles then
-        for _, f in ipairs(listfiles("") or listfiles("workspace") or {}) do
-            -- Look for .build or .txt files in the executor workspace
+    local suc, res = pcall(function() return listfiles("") end)
+    if suc and res then
+        for _, f in ipairs(res) do
             if f:lower():match("%.build$") or f:lower():match("%.txt$") then
                 table.insert(files, f:match("([^/%\\]+)$"))
             end
         end
     end
-    if #files == 0 then table.insert(files, "build.txt") end -- Fallback default
+    if #files == 0 then table.insert(files, "build.txt") end
     return files
 end
 
--- 2. Create the Module
+-- =========================================================================
+-- MODULE 1: PREVIEW BUILDER
+-- =========================================================================
+
+local function updatePreview()
+    if not previewBuilderModule.Enabled then return end
+    
+    local plotName = "WhiteZone"
+    local t = tostring(game:GetService("Players").LocalPlayer.Team)
+    if t=="red" then plotName="Really redZone" elseif t=="blue" then plotName="Really blueZone" elseif t=="black" then plotName="BlackZone" elseif t=="yellow" then plotName="New YellerZone" elseif t=="magenta" then plotName="MagentaZone" elseif t=="green" then plotName="CamoZone" end
+    local plotZone = workspace:FindFirstChild(plotName)
+    if not plotZone then return end
+
+    -- Apply Sliders to offset
+    local buildOffset = CFrame.new(offX.Value, offY.Value, offZ.Value) * CFrame.Angles(math.rad(rotX.Value), math.rad(rotY.Value), math.rad(rotZ.Value))
+    
+    for _, pData in ipairs(previewParts) do
+        if pData.part and pData.part.Parent then
+            local absoluteTargetCFrame = plotZone.CFrame:ToWorldSpace(buildOffset * pData.baseCF)
+            if pData.part:IsA("Model") then
+                pData.part:PivotTo(absoluteTargetCFrame)
+            else
+                pData.part.CFrame = absoluteTargetCFrame
+            end
+        end
+    end
+end
+
+local function triggerUpdate()
+    if previewBuilderModule.Enabled then updatePreview() end
+end
+
+previewBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
+    Name = 'Preview Builder',
+    Tooltip = 'Shows a hologram of your build. Adjust offsets before loading.',
+    Function = function(callback)
+        if callback then
+            local HttpService = game:GetService("HttpService")
+            local targetFile = fileDropdown.Value
+            if not targetFile or targetFile == "" then targetFile = "build.txt" end
+
+            if not isfile(targetFile) then 
+                notify('Preview Error', 'Could not find file: ' .. targetFile, 5, 'alert')
+                previewBuilderModule:Toggle()
+                return 
+            end
+            
+            local suc, buildData = pcall(function() return HttpService:JSONDecode(readfile(targetFile)) end)
+            if not suc then 
+                notify('Preview Error', 'Failed to decode JSON data.', 5, 'alert')
+                previewBuilderModule:Toggle()
+                return 
+            end
+
+            previewFolder:ClearAllChildren()
+            table.clear(previewParts)
+
+            local buildingParts = game:GetService("ReplicatedStorage"):WaitForChild("BuildingParts")
+            local totalBlocks = 0
+            
+            for i, data in ipairs(buildData) do
+                local template = buildingParts:FindFirstChild(data.Type)
+                if template then
+                    local ghost = template:Clone()
+                    
+                    -- Strip scripts
+                    for _, s in ipairs(ghost:GetDescendants()) do 
+                        if s:IsA("LuaSourceContainer") then s:Destroy() end 
+                    end
+
+                    -- Force Visual Hologram Properties
+                    local function setVisuals(part)
+                        if part:IsA("BasePart") then
+                            part.Anchored = true
+                            part.CanCollide = false
+                            part.Transparency = 0.6
+                            if data.Color then part.Color = Color3.new(unpack(data.Color)) end
+                            if data.Size then part.Size = Vector3.new(unpack(data.Size)) end
+                        end
+                    end
+                    
+                    setVisuals(ghost)
+                    for _, child in ipairs(ghost:GetDescendants()) do setVisuals(child) end
+
+                    ghost.Name = "Preview_" .. data.Type
+                    ghost.Parent = previewFolder
+                    
+                    table.insert(previewParts, {
+                        part = ghost,
+                        baseCF = CFrame.new(unpack(data.CFrame))
+                    })
+                    totalBlocks = totalBlocks + 1
+                end
+            end
+            
+            notify('Preview Loaded', 'Rendered ' .. totalBlocks .. ' blueprint parts.', 5, 'info')
+            updatePreview()
+        else
+            previewFolder:ClearAllChildren()
+            table.clear(previewParts)
+        end
+    end
+})
+
+offX = previewBuilderModule:CreateSlider({ Name = 'Offset X', Min = -500, Max = 500, Default = 0, Function = triggerUpdate })
+offY = previewBuilderModule:CreateSlider({ Name = 'Offset Y', Min = -500, Max = 500, Default = 0, Function = triggerUpdate })
+offZ = previewBuilderModule:CreateSlider({ Name = 'Offset Z', Min = -500, Max = 500, Default = 0, Function = triggerUpdate })
+rotX = previewBuilderModule:CreateSlider({ Name = 'Rotate X', Min = -180, Max = 180, Default = 0, Function = triggerUpdate })
+rotY = previewBuilderModule:CreateSlider({ Name = 'Rotate Y', Min = -180, Max = 180, Default = 0, Function = triggerUpdate })
+rotZ = previewBuilderModule:CreateSlider({ Name = 'Rotate Z', Min = -180, Max = 180, Default = 0, Function = triggerUpdate })
+
+
+-- =========================================================================
+-- MODULE 2: AUTO BUILDER
+-- =========================================================================
+
 autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
     Name = 'AutoBuilder',
     Tooltip = 'Automatically loads and builds your BABFT structures.',
     Function = function(callback)
-        if not callback then return end -- Only run when toggled ON
+        if not callback then return end
         
         task.spawn(function()
             local HttpService = game:GetService("HttpService")
@@ -46,13 +179,12 @@ autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
             local dataFolder = lp:WaitForChild("Data")
             local buildingParts = repStorage:WaitForChild("BuildingParts")
 
-            -- Read from the dropdown selection
             local targetFile = fileDropdown.Value
             if not targetFile or targetFile == "" then targetFile = "build.txt" end
 
             if not isfile(targetFile) then 
-                warn("❌ No build file found named: " .. targetFile)
-                autoBuilderModule:Toggle() -- Turn module off if file fails
+                notify('AutoBuilder', 'No build file found named: ' .. targetFile, 5, 'alert')
+                autoBuilderModule:Toggle()
                 return 
             end
             local buildData = HttpService:JSONDecode(readfile(targetFile))
@@ -69,14 +201,14 @@ autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
                 return tool
             end
 
-            -- REWRITE: Equip NOTHING at the start
+            -- Ensure absolutely nothing is equipped to start
             local buildTool = getTool("BuildingTool", false)
             local scaleTool = getTool("ScalingTool", false)
             local paintTool = getTool("PaintingTool", false)
             local propTool = getTool("PropertiesTool", false)
 
             if not buildTool then 
-                warn("❌ Missing Building Tool!") 
+                notify('AutoBuilder', 'Missing Building Tool! Check your inventory.', 5, 'alert')
                 autoBuilderModule:Toggle()
                 return 
             end
@@ -91,9 +223,33 @@ autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
             local plotZone = workspace:WaitForChild(plotName)
             local playerBlocksFolder = workspace:WaitForChild("Blocks"):WaitForChild(lp.Name)
 
+            local function getCount(name)
+                local d = dataFolder:FindFirstChild(name)
+                return (d and d:IsA("IntValue")) and d.Value or 0
+            end
+
+            -- INVENTORY CHECK logic
+            local requiredBlocks = {}
+            for _, data in ipairs(buildData) do
+                requiredBlocks[data.Type] = (requiredBlocks[data.Type] or 0) + 1
+            end
+            
+            local missingMsg = {}
+            for bType, reqAmt in pairs(requiredBlocks) do
+                local hasAmt = getCount(bType)
+                if hasAmt < reqAmt then
+                    table.insert(missingMsg, (reqAmt - hasAmt) .. "x " .. bType)
+                end
+            end
+            
+            if #missingMsg > 0 then
+                notify('Missing Blocks', 'Missing: ' .. table.concat(missingMsg, ", "), 10, 'warning')
+            end
+
             pcall(function() workspace:WaitForChild("InstaLoadFunction", 1):InvokeServer() end)
 
-            -- Fetch speed from UI Slider
+            notify('AutoBuilder', 'Placing blocks from ' .. targetFile, 5, 'info')
+
             local spawningPartsPerSecond = speedSlider.Value
             local spawnDelayRate = 1 / spawningPartsPerSecond
             local spawnBatchSize = math.max(1, math.ceil(0.015 / spawnDelayRate))
@@ -113,11 +269,6 @@ autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
 
             local threadsCompleted, totalExpected = 0, #buildData
 
-            local function getCount(name)
-                local d = dataFolder:FindFirstChild(name)
-                return (d and d:IsA("IntValue")) and d.Value or 0
-            end
-
             local function checkIsScalable(name)
                 local noScale = {"Seat","Chair","Motor","Wheel","Hinge","Glue","Portal","Thruster","Bread","Sign","Camera","Piston","Harpoon","Magnet","Balloon","Cannon","Switch","Button","Lever","Spring","Suspension","Servo","Chest","Firework","Jetpack","Shield","Wedge"}
                 for _, word in ipairs(noScale) do if string.find(name, word) then return false end end
@@ -127,7 +278,6 @@ autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
             local unprocessedBlocks = {}
             local processedBlocks = {}
 
-            -- Hook cleanup into Vape module so it disconnects if toggled off
             local blockAddedConn = playerBlocksFolder.ChildAdded:Connect(function(b)
                 if not processedBlocks[b] then
                     if not unprocessedBlocks[b.Name] then unprocessedBlocks[b.Name] = {} end
@@ -141,12 +291,16 @@ autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
                 table.insert(unprocessedBlocks[b.Name], b)
             end
 
-            print(string.format("🚀 Initiating INSANE LOAD for %d items using file: %s", totalExpected, targetFile))
+            -- Capture the exact offset configuration from the preview module sliders
+            local rotXC, rotYC, rotZC = rotX.Value, rotY.Value, rotZ.Value
+            local offXC, offYC, offZC = offX.Value, offY.Value, offZ.Value
+            local buildOffset = CFrame.new(offXC, offYC, offZC) * CFrame.Angles(math.rad(rotXC), math.rad(rotYC), math.rad(rotZC))
 
             for i, data in ipairs(buildData) do
-                if not autoBuilderModule.Enabled then break end -- Stop loop if module is toggled off
+                if not autoBuilderModule.Enabled then break end
 
-                local savedRelativeCFrame = CFrame.new(unpack(data.CFrame))
+                -- Coordinate Calculation System using Offset CFrames
+                local savedRelativeCFrame = buildOffset * CFrame.new(unpack(data.CFrame))
                 local absoluteTargetCFrame = plotZone.CFrame:ToWorldSpace(savedRelativeCFrame)
                 
                 local targetSize = Vector3.new(unpack(data.Size))
@@ -177,12 +331,10 @@ autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
                         end
                         
                         if spawnedBlock then
-                            -- Validate with Scale Toggle Check
                             if isScalable and scaleRF and useScaleToggle.Enabled then 
                                 task.spawn(function() scaleRF:InvokeServer(spawnedBlock, targetSize, absoluteTargetCFrame) end)
                             end
                             
-                            -- Validate with Paint Toggle Check
                             if usePaintToggle.Enabled then
                                 local defColor = Color3.new(1,1,1)
                                 local template = buildingParts:FindFirstChild(blockType)
@@ -195,7 +347,6 @@ autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
                                 end
                             end
                             
-                            -- Property Checks
                             if usePropToggle.Enabled then
                                 if props.Anc == false then table.insert(propBatches.Unanchor, spawnedBlock) end
                                 if props.Col == false then table.insert(propBatches.Uncollide, spawnedBlock) end
@@ -243,16 +394,13 @@ autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
                 end
             end
 
-            print("⏳ Waiting for spawning threads to finish...")
             while threadsCompleted < totalExpected and autoBuilderModule.Enabled do task.wait() end
-
             if not autoBuilderModule.Enabled then return end
 
-            print("⚙️ Blasting Physics & Mechanics Instantly...")
-
-            -- REWRITE: Equip Property Tool EXCLUSIVELY at this specific moment
+            -- Equip the Property Tool EXCLUSIVELY for mechanics applying
             if usePropToggle.Enabled and propTool then
-                getTool("PropertiesTool", true)
+                notify('AutoBuilder', 'Applying physical properties...', 5, 'info')
+                getTool("PropertiesTool", true) 
             end
 
             local function fireProp(cat, batch, val)
@@ -298,36 +446,40 @@ autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
                     for _ = 1, fires do task.spawn(function() propRF:InvokeServer("Wheel torque", {block}) end) end
                 end
             end
+            
+            -- Re-unequip after property applications
+            if usePropToggle.Enabled and propTool then
+                getTool("PropertiesTool", false) 
+            end
 
             if paintTool and #paintArgs > 0 and usePaintToggle.Enabled then
+                notify('AutoBuilder', 'Painting loaded structures...', 5, 'info')
                 task.spawn(function()
                     paintTool:WaitForChild("RF"):InvokeServer(paintArgs)
                 end)
             end
 
-            print("✅ All requests fired!")
-            -- Turn off module when done
+            notify('AutoBuilder', '✅ Build Complete!', 5, 'info')
             autoBuilderModule:Toggle()
         end)
     end
 })
 
--- 3. Add Component UI Settings
-
+-- Component Attachments
 fileDropdown = autoBuilderModule:CreateDropdown({
     Name = 'Build File',
     List = getBuildFiles(),
-    Function = function(val) print('Selected File: ' .. val) end,
+    Function = function(val) 
+        notify('File Selected', 'Target Build File changed to: ' .. val, 3, 'info')
+    end,
     Tooltip = 'Select the workspace file to load.'
 })
 
 refreshButton = autoBuilderModule:CreateButton({
     Name = 'Refresh File List',
     Function = function() 
-        -- Vape API doesn't have a native list-refresh method, but we can try to re-assign or inform the user
-        local newFiles = getBuildFiles()
-        fileDropdown.List = newFiles 
-        print("Files Refreshed. Check Dropdown again!")
+        fileDropdown:Change(getBuildFiles())[span_1](start_span)[span_1](end_span)
+        notify('Refreshed', 'Workspace files refreshed successfully!', 3, 'info')
     end
 })
 
@@ -336,11 +488,10 @@ speedSlider = autoBuilderModule:CreateSlider({
     Min = 100,
     Max = 1000,
     Default = 250,
-    Function = function(val) print('Set Spawn Speed: ' .. val) end,
+    Function = function(val) end,
     Tooltip = 'How fast the blocks spawn in.'
 })
 
--- Individual Tool Toggles (Replaces dropdown as it handles multi-state validation perfectly)
 useScaleToggle = autoBuilderModule:CreateToggle({
     Name = 'Use Scale Tool',
     Default = true,
@@ -361,4 +512,3 @@ usePropToggle = autoBuilderModule:CreateToggle({
     Function = function(val) end,
     Tooltip = 'If disabled, physics and block property mechanics will not be applied.'
 })
-              
