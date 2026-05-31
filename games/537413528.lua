@@ -1757,7 +1757,6 @@ end)
 
 
 
-
 run(function()
     local vape = shared.vape
     if not vape then return end
@@ -1769,6 +1768,7 @@ run(function()
     local textModule
     local textBox, fontDropdown
     local densitySlider, sizeSlider, thickSlider, voxelToggle
+    local maxWidthSlider, lineHeightSlider
     local colorModeDropdown, color1Slider, color2Slider
     local offX, offY, offZ, rotX, rotY, rotZ
     local blockDropdown, fallbackBox
@@ -1778,6 +1778,7 @@ run(function()
     local cachedTextData = nil
     local meshedData = {}
     local isPreviewing = false
+    local imgW, imgH = 0, 0
 
     -- Track Colors
     local c1 = Color3.new(1, 1, 1)
@@ -1799,12 +1800,13 @@ run(function()
         return (d and d:IsA("IntValue")) and d.Value or 0
     end
 
+    -- STRICT BLOCK FILTER: Only objects exactly ending in "Block"
     local function getAvailableBlocks()
         local blocks = {}
         local buildingParts = repStorage:FindFirstChild("BuildingParts")
         if buildingParts then
             for _, v in ipairs(buildingParts:GetChildren()) do
-                if string.find(v.Name, "Block") then table.insert(blocks, v.Name) end
+                if v.Name:match("Block$") then table.insert(blocks, v.Name) end
             end
         end
         if #blocks == 0 then table.insert(blocks, "MetalBlock") end
@@ -1818,7 +1820,6 @@ run(function()
         local isVoxel = voxelToggle.Enabled
         local processed = {}
         
-        -- Get Bounding Box for Gradients
         local minX, maxX, minY, maxY = math.huge, -math.huge, math.huge, -math.huge
         for _, p in ipairs(rawPixels) do
             if p.x < minX then minX = p.x end
@@ -1835,7 +1836,7 @@ run(function()
                 table.insert(processed, {x = p.x - centerX, y = p.y - centerY, w = 1})
             end
         else
-            -- GREEDY MESHING: Merge horizontal blocks to drastically reduce part count
+            -- GREEDY MESHING: Merge horizontal blocks
             local rows = {}
             for _, p in ipairs(rawPixels) do
                 rows[p.y] = rows[p.y] or {}
@@ -1863,7 +1864,6 @@ run(function()
             end
         end
 
-        -- Calculate Colors
         local colorMode = colorModeDropdown.Value
         local finalData = {}
         local widthRange = math.max(1, maxX - minX)
@@ -1871,8 +1871,6 @@ run(function()
 
         for i, p in ipairs(processed) do
             local color = c1
-            
-            -- Normalization for gradients (0 to 1)
             local normX = ((p.x + centerX) - minX) / widthRange
             local normY = ((p.y + centerY) - minY) / heightRange
 
@@ -1912,11 +1910,12 @@ run(function()
         local baseOffset = CFrame.new(offX.Value, offY.Value, offZ.Value) * CFrame.Angles(math.rad(rotX.Value), math.rad(rotY.Value), math.rad(rotZ.Value))
         local targetBaseCF = plotZone.CFrame * baseOffset
 
+        -- Render Text Body
         for _, block in ipairs(meshedData) do
             local ghost = Instance.new("Part")
             ghost.Anchored = true
             ghost.CanCollide = false
-            ghost.Transparency = 0.5
+            ghost.Transparency = 0.4
             ghost.Color = block.c
             
             local wSize = block.w * sizeM
@@ -1926,6 +1925,28 @@ run(function()
             ghost.CFrame = targetBaseCF:ToWorldSpace(CFrame.new(relativePos))
             ghost.Parent = previewFolder
         end
+
+        -- Render the 4 Corner Bounding Box Markers
+        local function drawMarker(x, y)
+            local marker = Instance.new("Part")
+            marker.Anchored = true
+            marker.CanCollide = false
+            marker.Material = Enum.Material.Neon
+            marker.Color = Color3.new(0, 1, 0.5) -- Neon Cyan/Green
+            marker.Size = Vector3.new(sizeM * 3, sizeM * 3, thickM * 1.5)
+            
+            local relativePos = Vector3.new(x * sizeM, (y * sizeM) + surfaceY, thickM/2)
+            marker.CFrame = targetBaseCF:ToWorldSpace(CFrame.new(relativePos))
+            marker.Parent = previewFolder
+        end
+
+        -- Center the markers properly based on the generated image canvas
+        local halfW = imgW / 2
+        local halfH = imgH / 2
+        drawMarker(-halfW, -halfH) -- Bottom Left
+        drawMarker(halfW, -halfH)  -- Bottom Right
+        drawMarker(-halfW, halfH)  -- Top Left
+        drawMarker(halfW, halfH)   -- Top Right
     end
 
     -- =========================================================================
@@ -2082,7 +2103,9 @@ run(function()
                 
                 local url = "http://localhost:8000/text?text=" .. HttpService:UrlEncode(textStr) .. 
                             "&font=" .. fontName .. 
-                            "&density=" .. densitySlider.Value
+                            "&density=" .. densitySlider.Value ..
+                            "&max_width=" .. maxWidthSlider.Value ..
+                            "&line_height=" .. lineHeightSlider.Value
                 
                 local suc, response = pcall(function() return game:HttpGet(url) end)
                 if not suc then notify('Server Error', 'Could not connect to Python localhost:8000', 5, 'alert') return end
@@ -2091,13 +2114,15 @@ run(function()
                 if not decoded.success then notify('Python Error', decoded.error or 'Failed.', 5, 'alert') return end
 
                 cachedTextData = decoded.pixels
+                imgW = decoded.img_width
+                imgH = decoded.img_height
                 
                 local testMeshed = ProcessTextData(cachedTextData)
                 local origBlocks = #cachedTextData
                 local optBlocks = #testMeshed
                 local saved = origBlocks - optBlocks
                 
-                notify('Success', 'Text processed! Optimal Mesh: ' .. optBlocks .. ' blocks ('..saved..' blocks saved!).', 8, 'info')
+                notify('Success', 'Optimal Mesh: ' .. optBlocks .. ' blocks ('..saved..' saved!). Corners Drawn.', 8, 'info')
                 
                 isPreviewing = true
                 LiveUpdatePreview()
@@ -2119,7 +2144,10 @@ run(function()
     textBox = textModule:CreateTextBox({ Name = 'Text to Generate', Default = "BABFT", Function = function() end })
     fontDropdown = textModule:CreateDropdown({ Name = 'Font Style', List = {'arial', 'impact', 'tahoma', 'verdana', 'Comic Sans MS'}, Function = function() end })
     
-    densitySlider = textModule:CreateSlider({ Name = 'Detail Density (Resolution)', Min = 10, Max = 100, Default = 40, Function = function() end })
+    densitySlider = textModule:CreateSlider({ Name = 'Detail Density (Resolution)', Min = 10, Max = 200, Default = 50, Function = function() end, Tooltip = "Higher density reveals smooth curves but costs more blocks." })
+    maxWidthSlider = textModule:CreateSlider({ Name = 'Max Line Width (Pixels)', Min = 0, Max = 2000, Default = 0, Function = function() end, Tooltip = "0 = No wrapping. Greater than 0 forces text to wrap to the next line." })
+    lineHeightSlider = textModule:CreateSlider({ Name = 'Line Spacing Offset', Min = 0, Max = 100, Default = 5, Function = function() end })
+
     sizeSlider = textModule:CreateSlider({ Name = 'Scale Multiplier (x10)', Min = 1, Max = 100, Default = 10, Function = LiveUpdatePreview })
     thickSlider = textModule:CreateSlider({ Name = 'Thickness (Z Depth) (x10)', Min = 1, Max = 100, Default = 10, Function = LiveUpdatePreview })
     
@@ -2142,8 +2170,6 @@ run(function()
     maxModeToggle = textModule:CreateToggle({ Name = 'Max Mode (Lag Warning)', Default = false, Function = function() end })
 
 end)
-
-
 
 
 
