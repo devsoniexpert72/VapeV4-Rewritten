@@ -929,6 +929,7 @@ end)
 
 
 
+
 run(function()
     local vape = shared.vape
     if not vape then return end
@@ -937,7 +938,7 @@ run(function()
     local repStorage = game:GetService("ReplicatedStorage")
     local lp = game:GetService("Players").LocalPlayer
 
-    -- Fetch all available blocks for the dropdown
+    -- Fetch available blocks natively
     local function getAvailableBlocks()
         local blocks = {}
         local buildingParts = repStorage:FindFirstChild("BuildingParts")
@@ -955,6 +956,7 @@ run(function()
     local imageLoaderModule
     local linkBox, blockDropdown, fallbackBox
     local resSlider, partSizeSlider, speedSlider, maxModeToggle
+    local imgOffX, imgOffY, imgOffZ
     
     local previewFolderName = "Image_Preview_Hologram"
     local cachedImageData = nil
@@ -984,8 +986,37 @@ run(function()
         return (d and d:IsA("IntValue")) and d.Value or 0
     end
 
+    -- Update Hologram live when sliders move
+    local function updateLivePreview()
+        if not cachedImageData then return end
+        local previewFolder = workspace:FindFirstChild(previewFolderName)
+        if not previewFolder then return end
+        local plotZone = getPlotZone()
+        if not plotZone then return end
+
+        local sizeMult = partSizeSlider.Value / 10
+        local surfaceY = (plotZone.Size.Y / 2) + (sizeMult / 2)
+        local halfWidth = (cachedImageData.width * sizeMult) / 2
+        local baseOffset = CFrame.new(imgOffX.Value, imgOffY.Value, imgOffZ.Value)
+        local targetBaseCF = plotZone.CFrame * baseOffset
+
+        for _, part in ipairs(previewFolder:GetChildren()) do
+            local px = part:GetAttribute("px")
+            local py = part:GetAttribute("py")
+            if px and py then
+                local relativePos = Vector3.new(
+                    (px * sizeMult) - halfWidth,
+                    (py * sizeMult) + surfaceY,
+                    0
+                )
+                part.CFrame = targetBaseCF:ToWorldSpace(CFrame.new(relativePos))
+                part.Size = Vector3.new(sizeMult, sizeMult, sizeMult)
+            end
+        end
+    end
+
     -- =========================================================================
-    -- MODULE DEFINITION
+    -- MAIN MODULE
     -- =========================================================================
     imageLoaderModule = vape.Categories['BABFT Tools']:CreateModule({
         Name = 'ImageLoader',
@@ -1021,16 +1052,23 @@ run(function()
                 local plotZone = getPlotZone()
                 local playerBlocksFolder = workspace:WaitForChild("Blocks"):WaitForChild(lp.Name)
 
-                -- Redundancy setup
                 local fallbacks = parseRedundancy(fallbackBox.Value)
-                local consumed = 0
+                local consumedTracker = {}
                 local totalNeeded = cachedImageData.total_blocks
                 local baseBlock = blockDropdown.Value
 
                 local function getValidBlock()
-                    if getCount(baseBlock) > consumed then return baseBlock end
+                    local amtUsed = consumedTracker[baseBlock] or 0
+                    if getCount(baseBlock) > amtUsed then 
+                        consumedTracker[baseBlock] = amtUsed + 1
+                        return baseBlock 
+                    end
                     for _, fb in ipairs(fallbacks) do
-                        if getCount(fb) > consumed then return fb end
+                        local fbUsed = consumedTracker[fb] or 0
+                        if getCount(fb) > fbUsed then 
+                            consumedTracker[fb] = fbUsed + 1
+                            return fb 
+                        end
                     end
                     return nil
                 end
@@ -1044,7 +1082,12 @@ run(function()
 
                 local paintArgs = {}
                 local threadsCompleted = 0
+                
+                -- Coordinate Math
                 local sizeMult = partSizeSlider.Value / 10
+                local surfaceY = (plotZone.Size.Y / 2) + (sizeMult / 2)
+                local halfWidth = (cachedImageData.width * sizeMult) / 2
+                local baseOffset = CFrame.new(imgOffX.Value, imgOffY.Value, imgOffZ.Value)
 
                 local unprocessedBlocks = {}
                 local blockAddedConn = playerBlocksFolder.ChildAdded:Connect(function(b)
@@ -1058,20 +1101,27 @@ run(function()
 
                     local currentBlockType = getValidBlock()
                     if not currentBlockType then
-                        notify('Error', 'Out of blocks! Built ' .. i .. '/' .. totalNeeded, 10, 'alert')
+                        notify('Error', 'Out of blocks! Built ' .. (i-1) .. '/' .. totalNeeded, 10, 'alert')
                         break
                     end
-                    consumed = consumed + 1
 
-                    -- Calculate CFrame based on pixel coordinates
-                    local relativePos = Vector3.new(pixel.x * sizeMult, pixel.y * sizeMult, 0)
-                    local savedRelativeCFrame = CFrame.new(relativePos)
+                    -- Perfect Placement Logic
+                    local relativePos = Vector3.new(
+                        (pixel.x * sizeMult) - halfWidth,
+                        (pixel.y * sizeMult) + surfaceY,
+                        0
+                    )
+                    
+                    local savedRelativeCFrame = baseOffset * CFrame.new(relativePos)
                     local absoluteTargetCFrame = plotZone.CFrame:ToWorldSpace(savedRelativeCFrame)
                     local targetSize = Vector3.new(sizeMult, sizeMult, sizeMult)
                     local targetColor = Color3.new(unpack(pixel.c))
 
                     task.spawn(function()
-                        buildRF:InvokeServer(currentBlockType, 1, plotZone, savedRelativeCFrame, true, absoluteTargetCFrame, false)
+                        local currentTotalCount = getCount(currentBlockType)
+                        
+                        -- Passing EXACT inventory count args
+                        buildRF:InvokeServer(currentBlockType, currentTotalCount, plotZone, savedRelativeCFrame, true, absoluteTargetCFrame, false)
                         
                         local spawnedBlock = nil
                         for attempt = 1, 15 do 
@@ -1102,7 +1152,7 @@ run(function()
                     end
                 end
 
-                while threadsCompleted < consumed and imageLoaderModule.Enabled do task.wait() end
+                while threadsCompleted < totalNeeded and imageLoaderModule.Enabled do task.wait() end
                 
                 if paintTool and #paintArgs > 0 then
                     notify('Painting', 'Applying image colors...', 5, 'info')
@@ -1130,9 +1180,7 @@ run(function()
                 local resLevel = resSlider.Value
                 local fetchUrl = "http://localhost:8000/process?res=" .. resLevel .. "&url=" .. HttpService:UrlEncode(url)
                 
-                local suc, response = pcall(function()
-                    return game:HttpGet(fetchUrl)
-                end)
+                local suc, response = pcall(function() return game:HttpGet(fetchUrl) end)
 
                 if not suc then 
                     notify('Server Error', 'Could not connect to Python localhost:8000', 5, 'alert') 
@@ -1148,7 +1196,6 @@ run(function()
                 cachedImageData = decoded
                 notify('Success', 'Image processed! Requires ' .. decoded.total_blocks .. ' blocks.', 10, 'info')
 
-                -- Render Hologram
                 if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
                 local previewFolder = Instance.new("Folder")
                 previewFolder.Name = previewFolderName
@@ -1158,6 +1205,9 @@ run(function()
                 if not plotZone then return end
                 
                 local sizeMult = partSizeSlider.Value / 10
+                local surfaceY = (plotZone.Size.Y / 2) + (sizeMult / 2)
+                local halfWidth = (decoded.width * sizeMult) / 2
+                local baseOffset = CFrame.new(imgOffX.Value, imgOffY.Value, imgOffZ.Value)
 
                 for _, pixel in ipairs(decoded.pixels) do
                     local ghost = Instance.new("Part")
@@ -1167,11 +1217,28 @@ run(function()
                     ghost.Color = Color3.new(unpack(pixel.c))
                     ghost.Size = Vector3.new(sizeMult, sizeMult, sizeMult)
                     
-                    local relativePos = Vector3.new(pixel.x * sizeMult, pixel.y * sizeMult, 0)
-                    ghost.CFrame = plotZone.CFrame:ToWorldSpace(CFrame.new(relativePos))
+                    -- Cache attributes for ultra-fast live updates
+                    ghost:SetAttribute("px", pixel.x)
+                    ghost:SetAttribute("py", pixel.y)
+                    
+                    local relativePos = Vector3.new(
+                        (pixel.x * sizeMult) - halfWidth,
+                        (pixel.y * sizeMult) + surfaceY,
+                        0
+                    )
+                    ghost.CFrame = plotZone.CFrame:ToWorldSpace(baseOffset * CFrame.new(relativePos))
                     ghost.Parent = previewFolder
                 end
             end)
+        end
+    })
+
+    imageLoaderModule:CreateButton({
+        Name = 'Clear Preview',
+        Function = function()
+            if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
+            cachedImageData = nil
+            notify('Cleared', 'Image preview cleared.', 3, 'info')
         end
     })
 
@@ -1179,16 +1246,25 @@ run(function()
     -- UI COMPONENTS
     -- =========================================================================
     linkBox = imageLoaderModule:CreateTextBox({ Name = 'Image Link', Default = "", Tooltip = "Direct link to a .png or .jpg image."})
-    resSlider = imageLoaderModule:CreateSlider({ Name = 'Resolution Drop (Higher = Worse)', Min = 1, Max = 20, Default = 1, Tooltip = "Increases block skip. 1 = Native, 5 = Scaled down by 5x."})
-    partSizeSlider = imageLoaderModule:CreateSlider({ Name = 'Pixel Scale Multiplier (x10)', Min = 1, Max = 100, Default = 10, Tooltip = "10 = 1x1x1 stud blocks."})
+    resSlider = imageLoaderModule:CreateSlider({ Name = 'Resolution Drop (Higher = Less Blocks)', Min = 1, Max = 20, Default = 1, Function = function() end })
+    partSizeSlider = imageLoaderModule:CreateSlider({ Name = 'Pixel Scale Multiplier (x10)', Min = 1, Max = 100, Default = 10, Function = updateLivePreview, Tooltip = "10 = 1x1x1 stud blocks."})
     
+    imgOffX = imageLoaderModule:CreateSlider({ Name = 'Offset X', Min = -1000, Max = 1000, Default = 0, Function = updateLivePreview })
+    imgOffY = imageLoaderModule:CreateSlider({ Name = 'Offset Y', Min = -1000, Max = 1000, Default = 0, Function = updateLivePreview })
+    imgOffZ = imageLoaderModule:CreateSlider({ Name = 'Offset Z', Min = -1000, Max = 1000, Default = 0, Function = updateLivePreview })
+
     blockDropdown = imageLoaderModule:CreateDropdown({ Name = 'Base Block Type', List = getAvailableBlocks(), Function = function() end})
     fallbackBox = imageLoaderModule:CreateTextBox({ Name = 'Fallback Blocks (Comma Separated)', Default = "PlasticBlock, WoodBlock", Tooltip = "Used if you run out of the base block type."})
     
-    speedSlider = imageLoaderModule:CreateSlider({ Name = 'Spawn Speed', Min = 100, Max = 1000, Default = 500 })
+    speedSlider = imageLoaderModule:CreateSlider({ Name = 'Spawn Speed', Min = 100, Max = 1000, Default = 500, Function = function() end })
     maxModeToggle = imageLoaderModule:CreateToggle({ Name = 'Max Mode', Default = false, Function = function(val) if val then notify('Warning', 'Max mode may lag or crash.', 5, 'alert') end end })
 
 end)
+
+
+
+
+
 
 
 
