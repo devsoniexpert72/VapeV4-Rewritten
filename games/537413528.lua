@@ -886,6 +886,278 @@ end)
 
 
 
+
+
+
+
+
+--IMAGE LOADER MODULE CAREFUL!!!
+
+
+
+run(function()
+    local vape = shared.vape
+    if not vape then return end
+
+    local HttpService = game:GetService("HttpService")
+    local repStorage = game:GetService("ReplicatedStorage")
+    local lp = game:GetService("Players").LocalPlayer
+
+    -- Fetch all available blocks for the dropdown
+    local function getAvailableBlocks()
+        local blocks = {}
+        local buildingParts = repStorage:FindFirstChild("BuildingParts")
+        if buildingParts then
+            for _, v in ipairs(buildingParts:GetChildren()) do
+                if string.find(v.Name, "Block") then
+                    table.insert(blocks, v.Name)
+                end
+            end
+        end
+        if #blocks == 0 then table.insert(blocks, "PlasticBlock") end
+        return blocks
+    end
+
+    local imageLoaderModule
+    local linkBox, blockDropdown, fallbackBox
+    local resSlider, partSizeSlider, speedSlider, maxModeToggle
+    
+    local previewFolderName = "Image_Preview_Hologram"
+    local cachedImageData = nil
+
+    local function notify(title, text, duration, typeTheme)
+        if vape.CreateNotification then
+            vape:CreateNotification(title, text, duration or 5, typeTheme or 'info')
+        end
+    end
+
+    local function getPlotZone()
+        local t = tostring(lp.Team)
+        local p = "WhiteZone"
+        if t=="red" then p="Really redZone" elseif t=="blue" then p="Really blueZone" elseif t=="black" then p="BlackZone" elseif t=="yellow" then p="New YellerZone" elseif t=="magenta" then p="MagentaZone" elseif t=="green" then p="CamoZone" end
+        return workspace:FindFirstChild(p)
+    end
+
+    local function parseRedundancy(text)
+        local list = {}
+        if not text or text == "" then return list end
+        for match in text:gmatch("[^,]+") do table.insert(list, match:match("^%s*(.-)%s*$")) end
+        return list
+    end
+
+    local function getCount(name)
+        local d = lp:WaitForChild("Data"):FindFirstChild(name)
+        return (d and d:IsA("IntValue")) and d.Value or 0
+    end
+
+    -- =========================================================================
+    -- MODULE DEFINITION
+    -- =========================================================================
+    imageLoaderModule = vape.Categories['BABFT Tools']:CreateModule({
+        Name = 'ImageLoader',
+        Tooltip = 'Builds an image from a URL using a Python localhost server.',
+        Function = function(callback)
+            if not callback then return end
+            
+            task.spawn(function()
+                if not cachedImageData or not cachedImageData.pixels then
+                    notify('Error', 'No image processed! Use the Preview button first.', 5, 'alert')
+                    imageLoaderModule:Toggle()
+                    return
+                end
+
+                local char = lp.Character or lp.CharacterAdded:Wait()
+                local function getTool(toolName)
+                    local tool = char:FindFirstChild(toolName) or lp.Backpack:FindFirstChild(toolName)
+                    if tool and tool.Parent ~= char then tool.Parent = char end
+                    return tool
+                end
+
+                local buildTool = getTool("BuildingTool")
+                local scaleTool = getTool("ScalingTool")
+                local paintTool = getTool("PaintingTool")
+
+                if not buildTool or not scaleTool or not paintTool then
+                    notify('Error', 'Missing required tools (Build, Scale, Paint).', 5, 'alert')
+                    imageLoaderModule:Toggle() return
+                end
+
+                local buildRF = buildTool:WaitForChild("RF")
+                local scaleRF = scaleTool:WaitForChild("RF")
+                local plotZone = getPlotZone()
+                local playerBlocksFolder = workspace:WaitForChild("Blocks"):WaitForChild(lp.Name)
+
+                -- Redundancy setup
+                local fallbacks = parseRedundancy(fallbackBox.Value)
+                local consumed = 0
+                local totalNeeded = cachedImageData.total_blocks
+                local baseBlock = blockDropdown.Value
+
+                local function getValidBlock()
+                    if getCount(baseBlock) > consumed then return baseBlock end
+                    for _, fb in ipairs(fallbacks) do
+                        if getCount(fb) > consumed then return fb end
+                    end
+                    return nil
+                end
+
+                pcall(function() workspace:WaitForChild("InstaLoadFunction", 1):InvokeServer() end)
+                notify('ImageLoader', 'Building image... (' .. totalNeeded .. ' blocks)', 5, 'info')
+
+                local spawnDelayRate = 1 / speedSlider.Value
+                local spawnBatchSize = math.max(1, math.ceil(0.015 / spawnDelayRate))
+                if maxModeToggle.Enabled then spawnDelayRate = 0; spawnBatchSize = 999999 end
+
+                local paintArgs = {}
+                local threadsCompleted = 0
+                local sizeMult = partSizeSlider.Value / 10
+
+                local unprocessedBlocks = {}
+                local blockAddedConn = playerBlocksFolder.ChildAdded:Connect(function(b)
+                    if not unprocessedBlocks[b.Name] then unprocessedBlocks[b.Name] = {} end
+                    table.insert(unprocessedBlocks[b.Name], b)
+                end)
+                imageLoaderModule:Clean(blockAddedConn)
+
+                for i, pixel in ipairs(cachedImageData.pixels) do
+                    if not imageLoaderModule.Enabled then break end
+
+                    local currentBlockType = getValidBlock()
+                    if not currentBlockType then
+                        notify('Error', 'Out of blocks! Built ' .. i .. '/' .. totalNeeded, 10, 'alert')
+                        break
+                    end
+                    consumed = consumed + 1
+
+                    -- Calculate CFrame based on pixel coordinates
+                    local relativePos = Vector3.new(pixel.x * sizeMult, pixel.y * sizeMult, 0)
+                    local savedRelativeCFrame = CFrame.new(relativePos)
+                    local absoluteTargetCFrame = plotZone.CFrame:ToWorldSpace(savedRelativeCFrame)
+                    local targetSize = Vector3.new(sizeMult, sizeMult, sizeMult)
+                    local targetColor = Color3.new(unpack(pixel.c))
+
+                    task.spawn(function()
+                        buildRF:InvokeServer(currentBlockType, 1, plotZone, savedRelativeCFrame, true, absoluteTargetCFrame, false)
+                        
+                        local spawnedBlock = nil
+                        for attempt = 1, 15 do 
+                            if not imageLoaderModule.Enabled then break end
+                            local list = unprocessedBlocks[currentBlockType]
+                            if list and #list > 0 then
+                                for idx, b in ipairs(list) do
+                                    if b.Parent and (b:GetPivot().Position - absoluteTargetCFrame.Position).Magnitude < 10 then
+                                        spawnedBlock = b
+                                        table.remove(list, idx)
+                                        break
+                                    end
+                                end
+                            end
+                            if spawnedBlock then break end
+                            task.wait() 
+                        end
+                        
+                        if spawnedBlock and imageLoaderModule.Enabled then
+                            task.spawn(function() scaleRF:InvokeServer(spawnedBlock, targetSize, absoluteTargetCFrame) end)
+                            table.insert(paintArgs, {spawnedBlock, targetColor})
+                        end
+                        threadsCompleted = threadsCompleted + 1
+                    end)
+                    
+                    if spawnDelayRate > 0 then task.wait(spawnDelayRate) else
+                        if i % spawnBatchSize == 0 then task.wait() end
+                    end
+                end
+
+                while threadsCompleted < consumed and imageLoaderModule.Enabled do task.wait() end
+                
+                if paintTool and #paintArgs > 0 then
+                    notify('Painting', 'Applying image colors...', 5, 'info')
+                    task.spawn(function() paintTool:WaitForChild("RF"):InvokeServer(paintArgs) end)
+                end
+
+                notify('ImageLoader', '✅ Image Build Complete!', 5, 'info')
+                imageLoaderModule:Toggle()
+            end)
+        end
+    })
+
+    -- =========================================================================
+    -- INSTA-PREVIEW BUTTON
+    -- =========================================================================
+    imageLoaderModule:CreateButton({
+        Name = 'Preview & Process Image',
+        Function = function()
+            local url = linkBox.Value
+            if not url or url == "" then notify('Error', 'Please enter an image link.', 5, 'alert') return end
+            
+            notify('Processing', 'Asking local Python server to process image...', 3, 'info')
+            
+            task.spawn(function()
+                local resLevel = resSlider.Value
+                local fetchUrl = "http://localhost:8000/process?res=" .. resLevel .. "&url=" .. HttpService:UrlEncode(url)
+                
+                local suc, response = pcall(function()
+                    return game:HttpGet(fetchUrl)
+                end)
+
+                if not suc then 
+                    notify('Server Error', 'Could not connect to Python localhost:8000', 5, 'alert') 
+                    return 
+                end
+
+                local decoded = HttpService:JSONDecode(response)
+                if not decoded.success then
+                    notify('Python Error', decoded.error or 'Failed to parse image.', 5, 'alert')
+                    return
+                end
+
+                cachedImageData = decoded
+                notify('Success', 'Image processed! Requires ' .. decoded.total_blocks .. ' blocks.', 10, 'info')
+
+                -- Render Hologram
+                if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
+                local previewFolder = Instance.new("Folder")
+                previewFolder.Name = previewFolderName
+                previewFolder.Parent = workspace
+
+                local plotZone = getPlotZone()
+                if not plotZone then return end
+                
+                local sizeMult = partSizeSlider.Value / 10
+
+                for _, pixel in ipairs(decoded.pixels) do
+                    local ghost = Instance.new("Part")
+                    ghost.Anchored = true
+                    ghost.CanCollide = false
+                    ghost.Transparency = 0.5
+                    ghost.Color = Color3.new(unpack(pixel.c))
+                    ghost.Size = Vector3.new(sizeMult, sizeMult, sizeMult)
+                    
+                    local relativePos = Vector3.new(pixel.x * sizeMult, pixel.y * sizeMult, 0)
+                    ghost.CFrame = plotZone.CFrame:ToWorldSpace(CFrame.new(relativePos))
+                    ghost.Parent = previewFolder
+                end
+            end)
+        end
+    })
+
+    -- =========================================================================
+    -- UI COMPONENTS
+    -- =========================================================================
+    linkBox = imageLoaderModule:CreateTextBox({ Name = 'Image Link', Default = "", Tooltip = "Direct link to a .png or .jpg image."})
+    resSlider = imageLoaderModule:CreateSlider({ Name = 'Resolution Drop (Higher = Worse)', Min = 1, Max = 20, Default = 1, Tooltip = "Increases block skip. 1 = Native, 5 = Scaled down by 5x."})
+    partSizeSlider = imageLoaderModule:CreateSlider({ Name = 'Pixel Scale Multiplier (x10)', Min = 1, Max = 100, Default = 10, Tooltip = "10 = 1x1x1 stud blocks."})
+    
+    blockDropdown = imageLoaderModule:CreateDropdown({ Name = 'Base Block Type', List = getAvailableBlocks(), Function = function() end})
+    fallbackBox = imageLoaderModule:CreateTextBox({ Name = 'Fallback Blocks (Comma Separated)', Default = "PlasticBlock, WoodBlock", Tooltip = "Used if you run out of the base block type."})
+    
+    speedSlider = imageLoaderModule:CreateSlider({ Name = 'Spawn Speed', Min = 100, Max = 1000, Default = 500 })
+    maxModeToggle = imageLoaderModule:CreateToggle({ Name = 'Max Mode', Default = false, Function = function(val) if val then notify('Warning', 'Max mode may lag or crash.', 5, 'alert') end end })
+
+end)
+
+
+
 --Ends here
 
 
