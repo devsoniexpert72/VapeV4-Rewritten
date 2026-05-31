@@ -204,8 +204,12 @@ end))
 
 --BABFT MODULE STARTS HERE
 
- -- =========================================================================
--- BABFT AutoBuilder (Loadstring Compatible Version)
+
+
+
+
+-- =========================================================================
+-- BABFT Advanced AutoBuilder & Hologram Previewer
 -- =========================================================================
 local vape = shared.vape
 if not vape then return warn("❌ Vape library not found in shared! Please wait for Vape to load.") end
@@ -218,27 +222,23 @@ local babftCategory = vape:CreateCategory({
 })
 
 -- UI Component Variables
-local autoBuilderModule
-local previewBuilderModule
-local fileDropdown
-local refreshButton
-local speedSlider
-local useScaleToggle
-local usePaintToggle
-local usePropToggle
+local autoBuilderModule, previewBuilderModule
+local fileDropdown, refreshButton
+local previewSpeedSlider, instaPreviewToggle, ghostPreviewToggle
+local buildSpeedSlider
+local offX, offY, offZ, rotX, rotY, rotZ
+local scaleSlider, mirrorXToggle
+local redundancyTextBox
+local useScaleToggle, usePaintToggle, usePropToggle
 
--- Offset Sliders for Preview & Building
-local offX, offY, offZ
-local rotX, rotY, rotZ
-
--- Preview Globals
+-- Globals
 local previewFolderName = "Blueprint_Preview"
-local previewFolder = workspace:FindFirstChild(previewFolderName) or Instance.new("Folder")
-previewFolder.Name = previewFolderName
-previewFolder.Parent = workspace
-local previewParts = {} -- Stores { part = Instance, baseCF = CFrame }
+local previewModel -- We now use a Model to correctly pivot around the center!
+local HttpService = game:GetService("HttpService")
+local repStorage = game:GetService("ReplicatedStorage")
+local lp = game:GetService("Players").LocalPlayer
 
--- Utility: Vape Notification Wrapper
+-- Utility: Vape Notification
 local function notify(title, text, duration, typeTheme)
     if vape and vape.CreateNotification then
         vape:CreateNotification(title, text, duration or 5, typeTheme or 'info')
@@ -260,209 +260,291 @@ local function getBuildFiles()
     return files
 end
 
--- =========================================================================
--- MODULE 1: PREVIEW BUILDER
--- =========================================================================
-
-local function updatePreview()
-    if not previewBuilderModule.Enabled then return end
-    
-    local plotName = "WhiteZone"
-    local t = tostring(game:GetService("Players").LocalPlayer.Team)
-    if t=="red" then plotName="Really redZone" elseif t=="blue" then plotName="Really blueZone" elseif t=="black" then plotName="BlackZone" elseif t=="yellow" then plotName="New YellerZone" elseif t=="magenta" then plotName="MagentaZone" elseif t=="green" then plotName="CamoZone" end
-    local plotZone = workspace:FindFirstChild(plotName)
-    if not plotZone then return end
-
-    -- Apply Sliders to offset
-    local buildOffset = CFrame.new(offX.Value, offY.Value, offZ.Value) * CFrame.Angles(math.rad(rotX.Value), math.rad(rotY.Value), math.rad(rotZ.Value))
-    
-    for _, pData in ipairs(previewParts) do
-        if pData.part and pData.part.Parent then
-            local absoluteTargetCFrame = plotZone.CFrame:ToWorldSpace(buildOffset * pData.baseCF)
-            if pData.part:IsA("Model") then
-                pData.part:PivotTo(absoluteTargetCFrame)
-            else
-                pData.part.CFrame = absoluteTargetCFrame
-            end
-        end
-    end
+-- Utility: Inventory Tracking
+local function getCount(name)
+    local d = lp:WaitForChild("Data"):FindFirstChild(name)
+    return (d and d:IsA("IntValue")) and d.Value or 0
 end
 
-local function triggerUpdate()
-    if previewBuilderModule.Enabled then updatePreview() end
+-- Utility: Non-Scalable Block Checking
+local function checkIsScalable(name)
+    local noScale = {"Seat","Chair","Motor","Wheel","Hinge","Glue","Portal","Thruster","Bread","Sign","Camera","Piston","Harpoon","Magnet","Balloon","Cannon","Switch","Button","Lever","Spring","Suspension","Servo","Chest","Firework","Jetpack","Shield","Wedge"}
+    for _, word in ipairs(noScale) do if string.find(name, word) then return false end end
+    return string.find(name, "Block") ~= nil
+end
+
+-- Utility: Parse Redundancy String
+local function parseRedundancy(text)
+    local list = {}
+    if not text or text == "" then return list end
+    for match in text:gmatch("[^,]+") do
+        table.insert(list, match:match("^%s*(.-)%s*$"))
+    end
+    return list
+end
+
+-- =========================================================================
+-- MODULE 1: ADVANCED PREVIEW BUILDER
+-- =========================================================================
+
+local function getPlotZone()
+    local t = tostring(lp.Team)
+    local plotName = "WhiteZone"
+    if t=="red" then plotName="Really redZone" elseif t=="blue" then plotName="Really blueZone" elseif t=="black" then plotName="BlackZone" elseif t=="yellow" then plotName="New YellerZone" elseif t=="magenta" then plotName="MagentaZone" elseif t=="green" then plotName="CamoZone" end
+    return workspace:FindFirstChild(plotName)
+end
+
+local function applyPreviewOffsets()
+    if not previewBuilderModule.Enabled or not previewModel or not previewModel.PrimaryPart then return end
+    local plotZone = getPlotZone()
+    if not plotZone then return end
+    
+    local offsetCF = CFrame.new(offX.Value, offY.Value, offZ.Value) * CFrame.Angles(math.rad(rotX.Value), math.rad(rotY.Value), math.rad(rotZ.Value))
+    previewModel:PivotTo(plotZone.CFrame * offsetCF)
 end
 
 previewBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
     Name = 'Preview Builder',
-    Tooltip = 'Shows a hologram of your build. Adjust offsets before loading.',
+    Tooltip = 'Shows a highly accurate hologram that rotates correctly around its pivot.',
     Function = function(callback)
         if callback then
-            local HttpService = game:GetService("HttpService")
             local targetFile = fileDropdown.Value
             if not targetFile or targetFile == "" then targetFile = "build.txt" end
 
             if not isfile(targetFile) then 
                 notify('Preview Error', 'Could not find file: ' .. targetFile, 5, 'alert')
-                previewBuilderModule:Toggle()
-                return 
+                previewBuilderModule:Toggle() return 
             end
             
             local suc, buildData = pcall(function() return HttpService:JSONDecode(readfile(targetFile)) end)
             if not suc then 
                 notify('Preview Error', 'Failed to decode JSON data.', 5, 'alert')
-                previewBuilderModule:Toggle()
-                return 
+                previewBuilderModule:Toggle() return 
             end
 
-            previewFolder:ClearAllChildren()
-            table.clear(previewParts)
+            -- Clean up old preview
+            if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
+            
+            -- Setup new Model to act as the perfect rotation pivot
+            previewModel = Instance.new("Model")
+            previewModel.Name = previewFolderName
+            local originPart = Instance.new("Part")
+            originPart.Name = "OriginPivot"
+            originPart.Anchored = true
+            originPart.Transparency = 1
+            originPart.CanCollide = false
+            originPart.Size = Vector3.new(1,1,1)
+            originPart.CFrame = CFrame.new(0,0,0)
+            originPart.Parent = previewModel
+            previewModel.PrimaryPart = originPart
+            previewModel.Parent = workspace
 
-            local buildingParts = game:GetService("ReplicatedStorage"):WaitForChild("BuildingParts")
+            local buildingParts = repStorage:WaitForChild("BuildingParts")
             local totalBlocks = 0
             
+            local speedMultiplier = previewSpeedSlider.Value
+            local spawnDelayRate = 1 / speedMultiplier
+            local spawnBatchSize = math.max(1, math.ceil(0.015 / spawnDelayRate))
+
+            -- Grab Configs
+            local mirror = mirrorXToggle.Enabled
+            local scaleMultiplier = scaleSlider.Value
+            local isGhost = ghostPreviewToggle.Enabled
+
+            notify('Preview Loading', 'Generating Blueprint...', 3, 'info')
+
             for i, data in ipairs(buildData) do
+                if not previewBuilderModule.Enabled then break end
+
                 local template = buildingParts:FindFirstChild(data.Type)
                 if template then
                     local ghost = template:Clone()
-                    
-                    -- Strip scripts
                     for _, s in ipairs(ghost:GetDescendants()) do 
                         if s:IsA("LuaSourceContainer") then s:Destroy() end 
                     end
 
-                    -- Force Visual Hologram Properties
-                    local function setVisuals(part)
+                    -- Apply Scale & Mirror to raw data mathematically
+                    local rawPos = Vector3.new(data.CFrame[1], data.CFrame[2], data.CFrame[3])
+                    local rawSize = Vector3.new(unpack(data.Size))
+                    local rx, ry, rz = CFrame.new(unpack(data.CFrame)):ToEulerAnglesXYZ()
+                    
+                    if mirror then
+                        rawPos = Vector3.new(-rawPos.X, rawPos.Y, rawPos.Z)
+                        ry, rz = -ry, -rz -- Inverse rotation for mirrored blocks
+                    end
+
+                    rawPos = rawPos * scaleMultiplier
+                    local relativeCF = CFrame.new(rawPos) * CFrame.Angles(rx, ry, rz)
+                    
+                    local function applyVisuals(part)
                         if part:IsA("BasePart") then
                             part.Anchored = true
-                            part.CanCollide = false
-                            part.Transparency = 0.6
+                            if isGhost then
+                                part.CanCollide = false
+                                part.Transparency = 0.6
+                            else
+                                part.CanCollide = (data.Props and data.Props.Col ~= false)
+                                part.Transparency = (data.Props and data.Props.Tr) or 0
+                            end
                             if data.Color then part.Color = Color3.new(unpack(data.Color)) end
-                            if data.Size then part.Size = Vector3.new(unpack(data.Size)) end
+                            
+                            -- Apply scaling
+                            if scaleMultiplier ~= 1 and checkIsScalable(data.Type) then
+                                part.Size = rawSize * scaleMultiplier
+                            else
+                                part.Size = rawSize
+                            end
                         end
                     end
                     
-                    setVisuals(ghost)
-                    for _, child in ipairs(ghost:GetDescendants()) do setVisuals(child) end
+                    applyVisuals(ghost)
+                    for _, child in ipairs(ghost:GetDescendants()) do applyVisuals(child) end
 
-                    ghost.Name = "Preview_" .. data.Type
-                    ghost.Parent = previewFolder
+                    -- Assign relative to the Model's zero-point pivot
+                    if ghost:IsA("Model") then
+                        ghost:PivotTo(relativeCF)
+                    else
+                        ghost.CFrame = relativeCF
+                    end
                     
-                    table.insert(previewParts, {
-                        part = ghost,
-                        baseCF = CFrame.new(unpack(data.CFrame))
-                    })
+                    ghost.Name = "Preview_" .. data.Type
+                    ghost.Parent = previewModel
                     totalBlocks = totalBlocks + 1
+                end
+
+                if not instaPreviewToggle.Enabled then
+                    if i % spawnBatchSize == 0 then task.wait() end
                 end
             end
             
-            notify('Preview Loaded', 'Rendered ' .. totalBlocks .. ' blueprint parts.', 5, 'info')
-            updatePreview()
+            if previewBuilderModule.Enabled then
+                notify('Preview Complete', 'Rendered ' .. totalBlocks .. ' parts. Ready to adjust offset!', 5, 'info')
+                applyPreviewOffsets()
+            end
         else
-            previewFolder:ClearAllChildren()
-            table.clear(previewParts)
+            if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
+            previewModel = nil
         end
     end
 })
 
-offX = previewBuilderModule:CreateSlider({ Name = 'Offset X', Min = -500, Max = 500, Default = 0, Function = triggerUpdate })
-offY = previewBuilderModule:CreateSlider({ Name = 'Offset Y', Min = -500, Max = 500, Default = 0, Function = triggerUpdate })
-offZ = previewBuilderModule:CreateSlider({ Name = 'Offset Z', Min = -500, Max = 500, Default = 0, Function = triggerUpdate })
-rotX = previewBuilderModule:CreateSlider({ Name = 'Rotate X', Min = -180, Max = 180, Default = 0, Function = triggerUpdate })
-rotY = previewBuilderModule:CreateSlider({ Name = 'Rotate Y', Min = -180, Max = 180, Default = 0, Function = triggerUpdate })
-rotZ = previewBuilderModule:CreateSlider({ Name = 'Rotate Z', Min = -180, Max = 180, Default = 0, Function = triggerUpdate })
+-- Shared File Selector
+fileDropdown = previewBuilderModule:CreateDropdown({
+    Name = 'Build File',
+    List = getBuildFiles(),
+    Function = function(val) end
+})
+previewBuilderModule:CreateButton({
+    Name = 'Refresh File List',
+    Function = function() fileDropdown:Change(getBuildFiles()); notify('Refreshed', 'Files updated!', 3, 'info') end
+})
+
+-- Preview Specific Settings
+previewSpeedSlider = previewBuilderModule:CreateSlider({ Name = 'Preview Load Speed', Min = 100, Max = 1000, Default = 500, Function = function() end })
+instaPreviewToggle = previewBuilderModule:CreateToggle({ Name = 'Insta-Preview', Default = false, Function = function() end, Tooltip = 'Ignores speed slider and renders instantly.'})
+ghostPreviewToggle = previewBuilderModule:CreateToggle({ Name = 'Ghost Preview Style', Default = true, Function = function() end, Tooltip = 'If disabled, preview blocks will be solid and have collision.'})
+
+-- Offset & Modifier Sliders
+offX = previewBuilderModule:CreateSlider({ Name = 'Offset X', Min = -500, Max = 500, Default = 0, Function = applyPreviewOffsets })
+offY = previewBuilderModule:CreateSlider({ Name = 'Offset Y', Min = -500, Max = 500, Default = 0, Function = applyPreviewOffsets })
+offZ = previewBuilderModule:CreateSlider({ Name = 'Offset Z', Min = -500, Max = 500, Default = 0, Function = applyPreviewOffsets })
+rotX = previewBuilderModule:CreateSlider({ Name = 'Rotate X', Min = -180, Max = 180, Default = 0, Function = applyPreviewOffsets })
+rotY = previewBuilderModule:CreateSlider({ Name = 'Rotate Y', Min = -180, Max = 180, Default = 0, Function = applyPreviewOffsets })
+rotZ = previewBuilderModule:CreateSlider({ Name = 'Rotate Z', Min = -180, Max = 180, Default = 0, Function = applyPreviewOffsets })
+
+scaleSlider = previewBuilderModule:CreateSlider({ Name = 'Scale Multiplier', Min = 0.1, Max = 5, Default = 1, Function = function() end, Tooltip = "Warning: Re-toggle preview to apply scale changes." })
+mirrorXToggle = previewBuilderModule:CreateToggle({ Name = 'Mirror Build (X-Axis)', Default = false, Function = function() end })
 
 
 -- =========================================================================
--- MODULE 2: AUTO BUILDER
+-- MODULE 2: ADVANCED AUTO BUILDER
 -- =========================================================================
 
 autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
     Name = 'AutoBuilder',
-    Tooltip = 'Automatically loads and builds your BABFT structures.',
+    Tooltip = 'Automatically loads and builds your BABFT structures with redundancies.',
     Function = function(callback)
         if not callback then return end
         
         task.spawn(function()
-            local HttpService = game:GetService("HttpService")
-            local repStorage = game:GetService("ReplicatedStorage")
-            local lp = game:GetService("Players").LocalPlayer
-            local char = lp.Character or lp.CharacterAdded:Wait()
-            local dataFolder = lp:WaitForChild("Data")
-            local buildingParts = repStorage:WaitForChild("BuildingParts")
-
             local targetFile = fileDropdown.Value
             if not targetFile or targetFile == "" then targetFile = "build.txt" end
 
             if not isfile(targetFile) then 
                 notify('AutoBuilder', 'No build file found named: ' .. targetFile, 5, 'alert')
-                autoBuilderModule:Toggle()
-                return 
+                autoBuilderModule:Toggle() return 
             end
             local buildData = HttpService:JSONDecode(readfile(targetFile))
 
+            local char = lp.Character or lp.CharacterAdded:Wait()
             local function getTool(toolName, equip)
                 local tool = char:FindFirstChild(toolName) or lp.Backpack:FindFirstChild(toolName)
                 if tool then
-                    if equip and tool.Parent ~= char then
-                        tool.Parent = char 
-                    elseif not equip and tool.Parent == char then
-                        tool.Parent = lp.Backpack 
-                    end
+                    if equip and tool.Parent ~= char then tool.Parent = char 
+                    elseif not equip and tool.Parent == char then tool.Parent = lp.Backpack end
                 end
                 return tool
             end
 
-            -- Ensure absolutely nothing is equipped to start
             local buildTool = getTool("BuildingTool", false)
             local scaleTool = getTool("ScalingTool", false)
             local paintTool = getTool("PaintingTool", false)
             local propTool = getTool("PropertiesTool", false)
 
             if not buildTool then 
-                notify('AutoBuilder', 'Missing Building Tool! Check your inventory.', 5, 'alert')
-                autoBuilderModule:Toggle()
-                return 
+                notify('AutoBuilder', 'Missing Building Tool!', 5, 'alert')
+                autoBuilderModule:Toggle() return 
             end
 
             local buildRF = buildTool:WaitForChild("RF")
             local scaleRF = scaleTool and scaleTool:FindFirstChild("RF")
             local propRF = propTool and propTool:WaitForChild("SetPropertieRF")
-
-            local t = tostring(lp.Team)
-            local plotName = "WhiteZone"
-            if t=="red" then plotName="Really redZone" elseif t=="blue" then plotName="Really blueZone" elseif t=="black" then plotName="BlackZone" elseif t=="yellow" then plotName="New YellerZone" elseif t=="magenta" then plotName="MagentaZone" elseif t=="green" then plotName="CamoZone" end
-            local plotZone = workspace:WaitForChild(plotName)
+            local plotZone = getPlotZone()
             local playerBlocksFolder = workspace:WaitForChild("Blocks"):WaitForChild(lp.Name)
 
-            local function getCount(name)
-                local d = dataFolder:FindFirstChild(name)
-                return (d and d:IsA("IntValue")) and d.Value or 0
+            -- =====================================
+            -- SMART INVENTORY & REDUNDANCY CHECKER
+            -- =====================================
+            local fallbacks = parseRedundancy(redundancyTextBox.Value)
+            local consumedTracker = {}
+            local finalMissingBlocks = 0
+
+            local function getBestFallback()
+                local best, maxAmt = nil, 0
+                for _, fb in ipairs(fallbacks) do
+                    local amt = getCount(fb) - (consumedTracker[fb] or 0)
+                    if amt > maxAmt then
+                        maxAmt = amt
+                        best = fb
+                    end
+                end
+                return best
             end
 
-            -- INVENTORY CHECK logic
-            local requiredBlocks = {}
-            for _, data in ipairs(buildData) do
-                requiredBlocks[data.Type] = (requiredBlocks[data.Type] or 0) + 1
-            end
-            
-            local missingMsg = {}
-            for bType, reqAmt in pairs(requiredBlocks) do
-                local hasAmt = getCount(bType)
-                if hasAmt < reqAmt then
-                    table.insert(missingMsg, (reqAmt - hasAmt) .. "x " .. bType)
+            for i, d in ipairs(buildData) do
+                local t = d.Type
+                consumedTracker[t] = (consumedTracker[t] or 0) + 1
+                
+                if consumedTracker[t] > getCount(t) then
+                    local bestFB = getBestFallback()
+                    if bestFB then
+                        consumedTracker[bestFB] = (consumedTracker[bestFB] or 0) + 1
+                        consumedTracker[t] = consumedTracker[t] - 1 
+                    else
+                        finalMissingBlocks = finalMissingBlocks + 1
+                    end
                 end
             end
-            
-            if #missingMsg > 0 then
-                notify('Missing Blocks', 'Missing: ' .. table.concat(missingMsg, ", "), 10, 'warning')
+
+            if finalMissingBlocks > 0 then
+                notify('Missing Blocks', "Missing " .. finalMissingBlocks .. " out of " .. #buildData .. " total blocks required for this build.", 10, 'warning')
             end
 
             pcall(function() workspace:WaitForChild("InstaLoadFunction", 1):InvokeServer() end)
+            notify('AutoBuilder', 'Initiating Construction...', 5, 'info')
 
-            notify('AutoBuilder', 'Placing blocks from ' .. targetFile, 5, 'info')
-
-            local spawningPartsPerSecond = speedSlider.Value
-            local spawnDelayRate = 1 / spawningPartsPerSecond
+            local speedMultiplier = buildSpeedSlider.Value
+            local spawnDelayRate = 1 / speedMultiplier
             local spawnBatchSize = math.max(1, math.ceil(0.015 / spawnDelayRate))
 
             local paintArgs = {}
@@ -479,13 +561,6 @@ autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
             }
 
             local threadsCompleted, totalExpected = 0, #buildData
-
-            local function checkIsScalable(name)
-                local noScale = {"Seat","Chair","Motor","Wheel","Hinge","Glue","Portal","Thruster","Bread","Sign","Camera","Piston","Harpoon","Magnet","Balloon","Cannon","Switch","Button","Lever","Spring","Suspension","Servo","Chest","Firework","Jetpack","Shield","Wedge"}
-                for _, word in ipairs(noScale) do if string.find(name, word) then return false end end
-                return string.find(name, "Block") ~= nil
-            end
-
             local unprocessedBlocks = {}
             local processedBlocks = {}
 
@@ -502,30 +577,55 @@ autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
                 table.insert(unprocessedBlocks[b.Name], b)
             end
 
-            -- Capture the exact offset configuration from the preview module sliders
-            local rotXC, rotYC, rotZC = rotX.Value, rotY.Value, rotZ.Value
-            local offXC, offYC, offZC = offX.Value, offY.Value, offZ.Value
-            local buildOffset = CFrame.new(offXC, offYC, offZC) * CFrame.Angles(math.rad(rotXC), math.rad(rotYC), math.rad(rotZC))
+            -- Reset tracker for the actual build loop
+            table.clear(consumedTracker)
+            
+            local mirror = mirrorXToggle.Enabled
+            local scaleMultiplier = scaleSlider.Value
+            local offsetCF = CFrame.new(offX.Value, offY.Value, offZ.Value) * CFrame.Angles(math.rad(rotX.Value), math.rad(rotY.Value), math.rad(rotZ.Value))
 
             for i, data in ipairs(buildData) do
                 if not autoBuilderModule.Enabled then break end
 
-                -- Coordinate Calculation System using Offset CFrames
-                local savedRelativeCFrame = buildOffset * CFrame.new(unpack(data.CFrame))
+                -- Dynamic Redundancy Assignment
+                local blockType = data.Type
+                consumedTracker[blockType] = (consumedTracker[blockType] or 0) + 1
+                if consumedTracker[blockType] > getCount(blockType) then
+                    local bestFB = getBestFallback()
+                    if bestFB then
+                        consumedTracker[bestFB] = (consumedTracker[bestFB] or 0) + 1
+                        consumedTracker[blockType] = consumedTracker[blockType] - 1
+                        blockType = bestFB
+                    end
+                end
+                
+                local rawPos = Vector3.new(data.CFrame[1], data.CFrame[2], data.CFrame[3])
+                local rawSize = Vector3.new(unpack(data.Size))
+                local rx, ry, rz = CFrame.new(unpack(data.CFrame)):ToEulerAnglesXYZ()
+                
+                if mirror then
+                    rawPos = Vector3.new(-rawPos.X, rawPos.Y, rawPos.Z)
+                    ry, rz = -ry, -rz 
+                end
+
+                rawPos = rawPos * scaleMultiplier
+                local baseRelativeCF = CFrame.new(rawPos) * CFrame.Angles(rx, ry, rz)
+                
+                local savedRelativeCFrame = offsetCF * baseRelativeCF
                 local absoluteTargetCFrame = plotZone.CFrame:ToWorldSpace(savedRelativeCFrame)
                 
-                local targetSize = Vector3.new(unpack(data.Size))
-                local targetColor = Color3.new(unpack(data.Color))
-                local blockType, props = data.Type, data.Props
                 local isScalable = checkIsScalable(blockType)
+                local targetSize = isScalable and (rawSize * scaleMultiplier) or rawSize
+                local targetColor = Color3.new(unpack(data.Color))
+                local props = data.Props
                 
                 task.spawn(function()
-                    local amt = getCount(blockType)
-                    if amt > 0 then
-                        buildRF:InvokeServer(blockType, amt, plotZone, savedRelativeCFrame, true, absoluteTargetCFrame, false)
+                    if getCount(blockType) > 0 then
+                        buildRF:InvokeServer(blockType, 1, plotZone, savedRelativeCFrame, true, absoluteTargetCFrame, false)
                         
                         local spawnedBlock = nil
                         for attempt = 1, 15 do 
+                            if not autoBuilderModule.Enabled then break end
                             local list = unprocessedBlocks[blockType]
                             if list and #list > 0 then
                                 for idx, b in ipairs(list) do
@@ -541,24 +641,16 @@ autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
                             task.wait() 
                         end
                         
-                        if spawnedBlock then
+                        if spawnedBlock and autoBuilderModule.Enabled then
                             if isScalable and scaleRF and useScaleToggle.Enabled then 
                                 task.spawn(function() scaleRF:InvokeServer(spawnedBlock, targetSize, absoluteTargetCFrame) end)
                             end
                             
                             if usePaintToggle.Enabled then
-                                local defColor = Color3.new(1,1,1)
-                                local template = buildingParts:FindFirstChild(blockType)
-                                if template then
-                                    local p = template:IsA("BasePart") and template or template:FindFirstChildWhichIsA("BasePart", true)
-                                    if p then defColor = p.Color end
-                                end
-                                if math.abs(targetColor.R - defColor.R) > 0.01 or math.abs(targetColor.G - defColor.G) > 0.01 or math.abs(targetColor.B - defColor.B) > 0.01 then
-                                    table.insert(paintArgs, {spawnedBlock, targetColor})
-                                end
+                                table.insert(paintArgs, {spawnedBlock, targetColor})
                             end
                             
-                            if usePropToggle.Enabled then
+                            if usePropToggle.Enabled and props then
                                 if props.Anc == false then table.insert(propBatches.Unanchor, spawnedBlock) end
                                 if props.Col == false then table.insert(propBatches.Uncollide, spawnedBlock) end
                                 if props.CS == false then table.insert(propBatches.NoShadow, spawnedBlock) end
@@ -596,21 +688,16 @@ autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
                     threadsCompleted = threadsCompleted + 1
                 end)
                 
-                if spawnDelayRate >= 0.015 then
-                    task.wait(spawnDelayRate)
-                else
-                    if i % spawnBatchSize == 0 then
-                        task.wait()
-                    end
+                if spawnDelayRate >= 0.015 then task.wait(spawnDelayRate) else
+                    if i % spawnBatchSize == 0 then task.wait() end
                 end
             end
 
             while threadsCompleted < totalExpected and autoBuilderModule.Enabled do task.wait() end
             if not autoBuilderModule.Enabled then return end
 
-            -- Equip the Property Tool EXCLUSIVELY for mechanics applying
             if usePropToggle.Enabled and propTool then
-                notify('AutoBuilder', 'Applying physical properties...', 5, 'info')
+                notify('AutoBuilder', 'Applying mechanical properties...', 5, 'info')
                 getTool("PropertiesTool", true) 
             end
 
@@ -635,39 +722,30 @@ autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
             end
 
             for category, valueGroups in pairs(propBatches.Values) do
-                for value, blockArray in pairs(valueGroups) do 
-                    fireProp(category, blockArray, value) 
-                end
+                for value, blockArray in pairs(valueGroups) do fireProp(category, blockArray, value) end
             end
 
             if #propBatches.WheelSpeed > 0 and usePropToggle.Enabled and propRF then
                 local speedMap = {[40]=0, [30]=1, [20]=2, [10]=3, [5]=4, [4]=5, [3]=6, [2]=7, [1]=8, [0.5]=9, [50]=10}
                 for _, data in ipairs(propBatches.WheelSpeed) do
-                    local block, targetSpeed = data[1], data[2]
-                    local fires = speedMap[targetSpeed] or 0
-                    for _ = 1, fires do task.spawn(function() propRF:InvokeServer("Wheel speed", {block}) end) end
+                    local fires = speedMap[data[2]] or 0
+                    for _ = 1, fires do task.spawn(function() propRF:InvokeServer("Wheel speed", {data[1]}) end) end
                 end
             end
 
             if #propBatches.WheelTorque > 0 and usePropToggle.Enabled and propRF then
                 for _, data in ipairs(propBatches.WheelTorque) do
-                    local block, targetTorque = data[1], data[2]
                     local fires = 0
-                    if targetTorque == 10000000 then fires = 1 elseif targetTorque == 100000000 then fires = 2 elseif targetTorque == 1000000000 then fires = 3 elseif targetTorque == 10000000000 then fires = 4 end
-                    for _ = 1, fires do task.spawn(function() propRF:InvokeServer("Wheel torque", {block}) end) end
+                    if data[2] == 10000000 then fires = 1 elseif data[2] == 100000000 then fires = 2 elseif data[2] == 1000000000 then fires = 3 elseif data[2] == 10000000000 then fires = 4 end
+                    for _ = 1, fires do task.spawn(function() propRF:InvokeServer("Wheel torque", {data[1]}) end) end
                 end
             end
             
-            -- Re-unequip after property applications
-            if usePropToggle.Enabled and propTool then
-                getTool("PropertiesTool", false) 
-            end
+            if usePropToggle.Enabled and propTool then getTool("PropertiesTool", false) end
 
             if paintTool and #paintArgs > 0 and usePaintToggle.Enabled then
-                notify('AutoBuilder', 'Painting loaded structures...', 5, 'info')
-                task.spawn(function()
-                    paintTool:WaitForChild("RF"):InvokeServer(paintArgs)
-                end)
+                notify('AutoBuilder', 'Painting structures...', 5, 'info')
+                task.spawn(function() paintTool:WaitForChild("RF"):InvokeServer(paintArgs) end)
             end
 
             notify('AutoBuilder', '✅ Build Complete!', 5, 'info')
@@ -676,54 +754,27 @@ autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
     end
 })
 
--- Component Attachments
-fileDropdown = autoBuilderModule:CreateDropdown({
-    Name = 'Build File',
-    List = getBuildFiles(),
-    Function = function(val) 
-        notify('File Selected', 'Target Build File changed to: ' .. val, 3, 'info')
-    end,
-    Tooltip = 'Select the workspace file to load.'
-})
+redundancyTextBox = autoBuilderModule:CreateTextBox({ Name = 'Fallback Blocks (Comma Separated)', Default = "", Tooltip = "Example: WoodBlock, TitaniumBlock. Uses these if you run out of required blocks.", Function = function() end})
+buildSpeedSlider = autoBuilderModule:CreateSlider({ Name = 'Spawn Speed', Min = 100, Max = 1000, Default = 250, Function = function() end })
 
-refreshButton = autoBuilderModule:CreateButton({
-    Name = 'Refresh File List',
-    Function = function() 
-        fileDropdown:Change(getBuildFiles())
-        notify('Refreshed', 'Workspace files refreshed successfully!', 3, 'info')
-    end
-})
+useScaleToggle = autoBuilderModule:CreateToggle({ Name = 'Use Scale Tool', Default = true, Function = function() end })
+usePaintToggle = autoBuilderModule:CreateToggle({ Name = 'Use Paint Tool', Default = true, Function = function() end })
+usePropToggle = autoBuilderModule:CreateToggle({ Name = 'Use Property Tool', Default = true, Function = function() end })
 
-speedSlider = autoBuilderModule:CreateSlider({
-    Name = 'Spawn Speed',
-    Min = 100,
-    Max = 1000,
-    Default = 250,
-    Function = function(val) end,
-    Tooltip = 'How fast the blocks spawn in.'
-})
 
-useScaleToggle = autoBuilderModule:CreateToggle({
-    Name = 'Use Scale Tool',
-    Default = true,
-    Function = function(val) end,
-    Tooltip = 'If disabled, blocks will not be scaled to their correct sizes.'
-})
 
-usePaintToggle = autoBuilderModule:CreateToggle({
-    Name = 'Use Paint Tool',
-    Default = true,
-    Function = function(val) end,
-    Tooltip = 'If disabled, blocks will spawn in default colors and skip painting.'
-})
 
-usePropToggle = autoBuilderModule:CreateToggle({
-    Name = 'Use Property Tool',
-    Default = true,
-    Function = function(val) end,
-    Tooltip = 'If disabled, physics and block property mechanics will not be applied.'
-})
-                
+
+
+
+
+
+
+
+
+
+
+
 --Ends here
 
 
