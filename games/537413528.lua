@@ -207,7 +207,6 @@ end))
 
 
 
-
 -- =========================================================================
 -- BABFT Advanced AutoBuilder & Hologram Previewer
 -- =========================================================================
@@ -233,7 +232,7 @@ local useScaleToggle, usePaintToggle, usePropToggle
 
 -- Globals
 local previewFolderName = "Blueprint_Preview"
-local previewModel -- We now use a Model to correctly pivot around the center!
+local previewParts = {} -- Cache for absolute mathematical CFrame offsets
 local HttpService = game:GetService("HttpService")
 local repStorage = game:GetService("ReplicatedStorage")
 local lp = game:GetService("Players").LocalPlayer
@@ -266,10 +265,8 @@ local function getCount(name)
     return (d and d:IsA("IntValue")) and d.Value or 0
 end
 
--- Utility: Non-Scalable Block Checking
+-- Utility: Strict Block Checking for Scaling
 local function checkIsScalable(name)
-    local noScale = {"Seat","Chair","Motor","Wheel","Hinge","Glue","Portal","Thruster","Bread","Sign","Camera","Piston","Harpoon","Magnet","Balloon","Cannon","Switch","Button","Lever","Spring","Suspension","Servo","Chest","Firework","Jetpack","Shield","Wedge"}
-    for _, word in ipairs(noScale) do if string.find(name, word) then return false end end
     return string.find(name, "Block") ~= nil
 end
 
@@ -294,13 +291,25 @@ local function getPlotZone()
     return workspace:FindFirstChild(plotName)
 end
 
+-- Mathematical recalculation of coordinates for the preview
 local function applyPreviewOffsets()
-    if not previewBuilderModule.Enabled or not previewModel or not previewModel.PrimaryPart then return end
+    if not previewBuilderModule.Enabled then return end
     local plotZone = getPlotZone()
     if not plotZone then return end
     
     local offsetCF = CFrame.new(offX.Value, offY.Value, offZ.Value) * CFrame.Angles(math.rad(rotX.Value), math.rad(rotY.Value), math.rad(rotZ.Value))
-    previewModel:PivotTo(plotZone.CFrame * offsetCF)
+    local baseCF = plotZone.CFrame * offsetCF
+    
+    for _, pData in ipairs(previewParts) do
+        if pData.part and pData.part.Parent then
+            local absoluteCF = baseCF * pData.relative
+            if pData.part:IsA("Model") then
+                pData.part:PivotTo(absoluteCF)
+            else
+                pData.part.CFrame = absoluteCF
+            end
+        end
+    end
 end
 
 previewBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
@@ -322,23 +331,13 @@ previewBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
                 previewBuilderModule:Toggle() return 
             end
 
-            -- Clean up old preview
             if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
             
-            -- Setup new Model to act as the perfect rotation pivot
-            previewModel = Instance.new("Model")
-            previewModel.Name = previewFolderName
-            local originPart = Instance.new("Part")
-            originPart.Name = "OriginPivot"
-            originPart.Anchored = true
-            originPart.Transparency = 1
-            originPart.CanCollide = false
-            originPart.Size = Vector3.new(1,1,1)
-            originPart.CFrame = CFrame.new(0,0,0)
-            originPart.Parent = previewModel
-            previewModel.PrimaryPart = originPart
-            previewModel.Parent = workspace
+            local previewFolder = Instance.new("Folder")
+            previewFolder.Name = previewFolderName
+            previewFolder.Parent = workspace
 
+            table.clear(previewParts)
             local buildingParts = repStorage:WaitForChild("BuildingParts")
             local totalBlocks = 0
             
@@ -346,9 +345,8 @@ previewBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
             local spawnDelayRate = 1 / speedMultiplier
             local spawnBatchSize = math.max(1, math.ceil(0.015 / spawnDelayRate))
 
-            -- Grab Configs
             local mirror = mirrorXToggle.Enabled
-            local scaleMultiplier = scaleSlider.Value
+            local scaleMultiplier = scaleSlider.Value / 10 -- Convert 10 to 1.0x
             local isGhost = ghostPreviewToggle.Enabled
 
             notify('Preview Loading', 'Generating Blueprint...', 3, 'info')
@@ -363,14 +361,13 @@ previewBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
                         if s:IsA("LuaSourceContainer") then s:Destroy() end 
                     end
 
-                    -- Apply Scale & Mirror to raw data mathematically
                     local rawPos = Vector3.new(data.CFrame[1], data.CFrame[2], data.CFrame[3])
                     local rawSize = Vector3.new(unpack(data.Size))
                     local rx, ry, rz = CFrame.new(unpack(data.CFrame)):ToEulerAnglesXYZ()
                     
                     if mirror then
                         rawPos = Vector3.new(-rawPos.X, rawPos.Y, rawPos.Z)
-                        ry, rz = -ry, -rz -- Inverse rotation for mirrored blocks
+                        ry, rz = -ry, -rz 
                     end
 
                     rawPos = rawPos * scaleMultiplier
@@ -388,7 +385,6 @@ previewBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
                             end
                             if data.Color then part.Color = Color3.new(unpack(data.Color)) end
                             
-                            -- Apply scaling
                             if scaleMultiplier ~= 1 and checkIsScalable(data.Type) then
                                 part.Size = rawSize * scaleMultiplier
                             else
@@ -399,16 +395,16 @@ previewBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
                     
                     applyVisuals(ghost)
                     for _, child in ipairs(ghost:GetDescendants()) do applyVisuals(child) end
-
-                    -- Assign relative to the Model's zero-point pivot
-                    if ghost:IsA("Model") then
-                        ghost:PivotTo(relativeCF)
-                    else
-                        ghost.CFrame = relativeCF
-                    end
                     
                     ghost.Name = "Preview_" .. data.Type
-                    ghost.Parent = previewModel
+                    ghost.Parent = previewFolder
+                    
+                    -- Cache into our math matrix so sliders can instantly update it later
+                    table.insert(previewParts, {
+                        part = ghost,
+                        relative = relativeCF
+                    })
+                    
                     totalBlocks = totalBlocks + 1
                 end
 
@@ -419,11 +415,11 @@ previewBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
             
             if previewBuilderModule.Enabled then
                 notify('Preview Complete', 'Rendered ' .. totalBlocks .. ' parts. Ready to adjust offset!', 5, 'info')
-                applyPreviewOffsets()
+                applyPreviewOffsets() -- Force align exactly to sliders
             end
         else
             if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
-            previewModel = nil
+            table.clear(previewParts)
         end
     end
 })
@@ -444,15 +440,15 @@ previewSpeedSlider = previewBuilderModule:CreateSlider({ Name = 'Preview Load Sp
 instaPreviewToggle = previewBuilderModule:CreateToggle({ Name = 'Insta-Preview', Default = false, Function = function() end, Tooltip = 'Ignores speed slider and renders instantly.'})
 ghostPreviewToggle = previewBuilderModule:CreateToggle({ Name = 'Ghost Preview Style', Default = true, Function = function() end, Tooltip = 'If disabled, preview blocks will be solid and have collision.'})
 
--- Offset & Modifier Sliders
-offX = previewBuilderModule:CreateSlider({ Name = 'Offset X', Min = -500, Max = 500, Default = 0, Function = applyPreviewOffsets })
-offY = previewBuilderModule:CreateSlider({ Name = 'Offset Y', Min = -500, Max = 500, Default = 0, Function = applyPreviewOffsets })
-offZ = previewBuilderModule:CreateSlider({ Name = 'Offset Z', Min = -500, Max = 500, Default = 0, Function = applyPreviewOffsets })
+-- Offset & Modifier Sliders (-1000 to 1000 for bigger maps)
+offX = previewBuilderModule:CreateSlider({ Name = 'Offset X', Min = -1000, Max = 1000, Default = 0, Function = applyPreviewOffsets })
+offY = previewBuilderModule:CreateSlider({ Name = 'Offset Y', Min = -1000, Max = 1000, Default = 0, Function = applyPreviewOffsets })
+offZ = previewBuilderModule:CreateSlider({ Name = 'Offset Z', Min = -1000, Max = 1000, Default = 0, Function = applyPreviewOffsets })
 rotX = previewBuilderModule:CreateSlider({ Name = 'Rotate X', Min = -180, Max = 180, Default = 0, Function = applyPreviewOffsets })
 rotY = previewBuilderModule:CreateSlider({ Name = 'Rotate Y', Min = -180, Max = 180, Default = 0, Function = applyPreviewOffsets })
 rotZ = previewBuilderModule:CreateSlider({ Name = 'Rotate Z', Min = -180, Max = 180, Default = 0, Function = applyPreviewOffsets })
 
-scaleSlider = previewBuilderModule:CreateSlider({ Name = 'Scale Multiplier', Min = 0.1, Max = 5, Default = 1, Function = function() end, Tooltip = "Warning: Re-toggle preview to apply scale changes." })
+scaleSlider = previewBuilderModule:CreateSlider({ Name = 'Scale Multiplier (x10)', Min = 1, Max = 100, Default = 10, Function = function() end, Tooltip = "10 = 1.0x Scale. Re-toggle preview to apply scale changes." })
 mirrorXToggle = previewBuilderModule:CreateToggle({ Name = 'Mirror Build (X-Axis)', Default = false, Function = function() end })
 
 
@@ -581,13 +577,12 @@ autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
             table.clear(consumedTracker)
             
             local mirror = mirrorXToggle.Enabled
-            local scaleMultiplier = scaleSlider.Value
+            local scaleMultiplier = scaleSlider.Value / 10 -- Convert 10 to 1.0x
             local offsetCF = CFrame.new(offX.Value, offY.Value, offZ.Value) * CFrame.Angles(math.rad(rotX.Value), math.rad(rotY.Value), math.rad(rotZ.Value))
 
             for i, data in ipairs(buildData) do
                 if not autoBuilderModule.Enabled then break end
 
-                -- Dynamic Redundancy Assignment
                 local blockType = data.Type
                 consumedTracker[blockType] = (consumedTracker[blockType] or 0) + 1
                 if consumedTracker[blockType] > getCount(blockType) then
@@ -620,8 +615,10 @@ autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
                 local props = data.Props
                 
                 task.spawn(function()
-                    if getCount(blockType) > 0 then
-                        buildRF:InvokeServer(blockType, 1, plotZone, savedRelativeCFrame, true, absoluteTargetCFrame, false)
+                    local currentTotalCount = getCount(blockType)
+                    if currentTotalCount > 0 then
+                        -- Passing exact total count of blockType as the 2nd argument
+                        buildRF:InvokeServer(blockType, currentTotalCount, plotZone, savedRelativeCFrame, true, absoluteTargetCFrame, false)
                         
                         local spawnedBlock = nil
                         for attempt = 1, 15 do 
@@ -754,18 +751,78 @@ autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
     end
 })
 
+-- =========================================================================
+-- CHECK MISSING BLOCKS BUTTON
+-- =========================================================================
+autoBuilderModule:CreateButton({
+    Name = 'Check Missing Blocks',
+    Function = function()
+        local targetFile = fileDropdown.Value
+        if not targetFile or targetFile == "" then targetFile = "build.txt" end
+        if not isfile(targetFile) then 
+            notify('Error', 'File not found: ' .. targetFile, 5, 'alert') return 
+        end
+        
+        local suc, buildData = pcall(function() return HttpService:JSONDecode(readfile(targetFile)) end)
+        if not suc then 
+            notify('Error', 'Failed to decode JSON data.', 5, 'alert') return 
+        end
+
+        local fallbacks = parseRedundancy(redundancyTextBox.Value)
+        local consumedTracker = {}
+        local missingDetails = {}
+        local totalMissing = 0
+        local totalRequired = #buildData
+
+        local function getBestFallback()
+            local best, maxAmt = nil, 0
+            for _, fb in ipairs(fallbacks) do
+                local amt = getCount(fb) - (consumedTracker[fb] or 0)
+                if amt > maxAmt then
+                    maxAmt = amt
+                    best = fb
+                end
+            end
+            return best
+        end
+
+        for i, d in ipairs(buildData) do
+            local t = d.Type
+            consumedTracker[t] = (consumedTracker[t] or 0) + 1
+            
+            if consumedTracker[t] > getCount(t) then
+                local bestFB = getBestFallback()
+                if bestFB then
+                    consumedTracker[bestFB] = (consumedTracker[bestFB] or 0) + 1
+                    consumedTracker[t] = consumedTracker[t] - 1 
+                else
+                    missingDetails[t] = (missingDetails[t] or 0) + 1
+                    totalMissing = totalMissing + 1
+                end
+            end
+        end
+
+        if totalMissing == 0 then
+            notify('Block Check', '✅ You have all ' .. totalRequired .. ' required blocks!', 5, 'info')
+        else
+            local missingStr = ""
+            for bType, amt in pairs(missingDetails) do
+                missingStr = missingStr .. amt .. "x " .. bType .. ", "
+            end
+            -- Truncate string if it exceeds notification bounds
+            if #missingStr > 150 then missingStr = missingStr:sub(1, 150) .. "..." end
+            
+            notify('Missing Blocks', "Missing " .. totalMissing .. " out of " .. totalRequired .. " blocks.\n" .. missingStr, 15, 'warning')
+        end
+    end
+})
+
 redundancyTextBox = autoBuilderModule:CreateTextBox({ Name = 'Fallback Blocks (Comma Separated)', Default = "", Tooltip = "Example: WoodBlock, TitaniumBlock. Uses these if you run out of required blocks.", Function = function() end})
 buildSpeedSlider = autoBuilderModule:CreateSlider({ Name = 'Spawn Speed', Min = 100, Max = 1000, Default = 250, Function = function() end })
 
 useScaleToggle = autoBuilderModule:CreateToggle({ Name = 'Use Scale Tool', Default = true, Function = function() end })
 usePaintToggle = autoBuilderModule:CreateToggle({ Name = 'Use Paint Tool', Default = true, Function = function() end })
 usePropToggle = autoBuilderModule:CreateToggle({ Name = 'Use Property Tool', Default = true, Function = function() end })
-
-
-
-
-
-
 
 
 
