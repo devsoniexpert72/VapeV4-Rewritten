@@ -1753,6 +1753,401 @@ run(function()
 end)
 
 
+--3D FONT GENERATOR BE CAREFUL!!!
+
+
+
+
+run(function()
+    local vape = shared.vape
+    if not vape then return end
+
+    local HttpService = game:GetService("HttpService")
+    local repStorage = game:GetService("ReplicatedStorage")
+    local lp = game:GetService("Players").LocalPlayer
+
+    local textModule
+    local textBox, fontDropdown
+    local densitySlider, sizeSlider, thickSlider, voxelToggle
+    local colorModeDropdown, color1Slider, color2Slider
+    local offX, offY, offZ, rotX, rotY, rotZ
+    local blockDropdown, fallbackBox
+    local speedSlider, maxModeToggle
+    
+    local previewFolderName = "Text_Builder_Preview"
+    local cachedTextData = nil
+    local meshedData = {}
+    local isPreviewing = false
+
+    -- Track Colors
+    local c1 = Color3.new(1, 1, 1)
+    local c2 = Color3.new(0.5, 0.5, 0.5)
+
+    local function notify(title, text, duration, typeTheme)
+        if vape.CreateNotification then vape:CreateNotification(title, text, duration or 5, typeTheme or 'info') end
+    end
+
+    local function getPlotZone()
+        local t = tostring(lp.Team)
+        local p = "WhiteZone"
+        if t=="red" then p="Really redZone" elseif t=="blue" then p="Really blueZone" elseif t=="black" then p="BlackZone" elseif t=="yellow" then p="New YellerZone" elseif t=="magenta" then p="MagentaZone" elseif t=="green" then p="CamoZone" end
+        return workspace:FindFirstChild(p)
+    end
+
+    local function getCount(name)
+        local d = lp:WaitForChild("Data"):FindFirstChild(name)
+        return (d and d:IsA("IntValue")) and d.Value or 0
+    end
+
+    local function getAvailableBlocks()
+        local blocks = {}
+        local buildingParts = repStorage:FindFirstChild("BuildingParts")
+        if buildingParts then
+            for _, v in ipairs(buildingParts:GetChildren()) do
+                if string.find(v.Name, "Block") then table.insert(blocks, v.Name) end
+            end
+        end
+        if #blocks == 0 then table.insert(blocks, "MetalBlock") end
+        return blocks
+    end
+
+    -- =========================================================================
+    -- GREEDY MESHING & DATA PROCESSING
+    -- =========================================================================
+    local function ProcessTextData(rawPixels)
+        local isVoxel = voxelToggle.Enabled
+        local processed = {}
+        
+        -- Get Bounding Box for Gradients
+        local minX, maxX, minY, maxY = math.huge, -math.huge, math.huge, -math.huge
+        for _, p in ipairs(rawPixels) do
+            if p.x < minX then minX = p.x end
+            if p.x > maxX then maxX = p.x end
+            if p.y < minY then minY = p.y end
+            if p.y > maxY then maxY = p.y end
+        end
+
+        local centerX = (minX + maxX) / 2
+        local centerY = (minY + maxY) / 2
+
+        if isVoxel then
+            for _, p in ipairs(rawPixels) do
+                table.insert(processed, {x = p.x - centerX, y = p.y - centerY, w = 1})
+            end
+        else
+            -- GREEDY MESHING: Merge horizontal blocks to drastically reduce part count
+            local rows = {}
+            for _, p in ipairs(rawPixels) do
+                rows[p.y] = rows[p.y] or {}
+                rows[p.y][p.x] = true
+            end
+
+            for y, row in pairs(rows) do
+                local x_vals = {}
+                for x in pairs(row) do table.insert(x_vals, x) end
+                table.sort(x_vals)
+
+                local c_start = x_vals[1]
+                local c_end = x_vals[1]
+
+                for i = 2, #x_vals do
+                    if x_vals[i] == c_end + 1 then
+                        c_end = x_vals[i]
+                    else
+                        table.insert(processed, {x = c_start - centerX + ((c_end - c_start)/2), y = y - centerY, w = c_end - c_start + 1})
+                        c_start = x_vals[i]
+                        c_end = x_vals[i]
+                    end
+                end
+                table.insert(processed, {x = c_start - centerX + ((c_end - c_start)/2), y = y - centerY, w = c_end - c_start + 1})
+            end
+        end
+
+        -- Calculate Colors
+        local colorMode = colorModeDropdown.Value
+        local finalData = {}
+        local widthRange = math.max(1, maxX - minX)
+        local heightRange = math.max(1, maxY - minY)
+
+        for i, p in ipairs(processed) do
+            local color = c1
+            
+            -- Normalization for gradients (0 to 1)
+            local normX = ((p.x + centerX) - minX) / widthRange
+            local normY = ((p.y + centerY) - minY) / heightRange
+
+            if colorMode == "Gradient (Left-Right)" then
+                color = c1:Lerp(c2, normX)
+            elseif colorMode == "Gradient (Top-Bottom)" then
+                color = c1:Lerp(c2, 1 - normY)
+            elseif colorMode == "Rainbow (By Part)" then
+                color = Color3.fromHSV((i / #processed) % 1, 1, 1)
+            elseif colorMode == "Rainbow (Left-Right)" then
+                color = Color3.fromHSV(normX % 1, 1, 1)
+            elseif colorMode == "Rainbow (Top-Bottom)" then
+                color = Color3.fromHSV((1 - normY) % 1, 1, 1)
+            end
+
+            table.insert(finalData, {x = p.x, y = p.y, w = p.w, c = color})
+        end
+        
+        return finalData
+    end
+
+    local function LiveUpdatePreview()
+        if not isPreviewing or not cachedTextData then return end
+        local plotZone = getPlotZone()
+        if not plotZone then return end
+
+        if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
+        local previewFolder = Instance.new("Folder")
+        previewFolder.Name = previewFolderName
+        previewFolder.Parent = workspace
+
+        meshedData = ProcessTextData(cachedTextData)
+        
+        local sizeM = sizeSlider.Value / 10
+        local thickM = thickSlider.Value / 10
+        local surfaceY = (plotZone.Size.Y / 2) + (sizeM / 2)
+        local baseOffset = CFrame.new(offX.Value, offY.Value, offZ.Value) * CFrame.Angles(math.rad(rotX.Value), math.rad(rotY.Value), math.rad(rotZ.Value))
+        local targetBaseCF = plotZone.CFrame * baseOffset
+
+        for _, block in ipairs(meshedData) do
+            local ghost = Instance.new("Part")
+            ghost.Anchored = true
+            ghost.CanCollide = false
+            ghost.Transparency = 0.5
+            ghost.Color = block.c
+            
+            local wSize = block.w * sizeM
+            ghost.Size = Vector3.new(wSize, sizeM, thickM)
+            
+            local relativePos = Vector3.new(block.x * sizeM, (block.y * sizeM) + surfaceY, thickM/2)
+            ghost.CFrame = targetBaseCF:ToWorldSpace(CFrame.new(relativePos))
+            ghost.Parent = previewFolder
+        end
+    end
+
+    -- =========================================================================
+    -- MAIN BUILD MODULE
+    -- =========================================================================
+    textModule = vape.Categories['BABFT Tools']:CreateModule({
+        Name = '3D Text Generator',
+        Tooltip = 'Generates 3D text natively using optimal block-merging logic.',
+        Function = function(callback)
+            if not callback then return end
+            
+            task.spawn(function()
+                if not cachedTextData or #meshedData == 0 then
+                    notify('Error', 'Please generate/preview text first!', 5, 'alert')
+                    textModule:Toggle() return
+                end
+
+                local char = lp.Character or lp.CharacterAdded:Wait()
+                local function getTool(name) return lp.Backpack:FindFirstChild(name) or (char and char:FindFirstChild(name)) end
+
+                local buildTool = getTool("BuildingTool")
+                local scaleTool = getTool("ScalingTool")
+                local paintTool = getTool("PaintingTool")
+
+                if not buildTool or not scaleTool or not paintTool then
+                    notify('Error', 'Missing required tools (Build, Scale, Paint).', 5, 'alert')
+                    textModule:Toggle() return
+                end
+
+                local buildRF = buildTool:WaitForChild("RF")
+                local scaleRF = scaleTool:WaitForChild("RF")
+                local plotZone = getPlotZone()
+                local playerBlocksFolder = workspace:WaitForChild("Blocks"):WaitForChild(lp.Name)
+
+                local fallbacks = {}
+                for match in fallbackBox.Value:gmatch("[^,]+") do table.insert(fallbacks, match:match("^%s*(.-)%s*$")) end
+                local consumedTracker = {}
+                local baseBlock = blockDropdown.Value
+
+                local function getValidBlock()
+                    local amtUsed = consumedTracker[baseBlock] or 0
+                    if getCount(baseBlock) > amtUsed then 
+                        consumedTracker[baseBlock] = amtUsed + 1
+                        return baseBlock 
+                    end
+                    for _, fb in ipairs(fallbacks) do
+                        local fbUsed = consumedTracker[fb] or 0
+                        if getCount(fb) > fbUsed then 
+                            consumedTracker[fb] = fbUsed + 1
+                            return fb 
+                        end
+                    end
+                    return nil
+                end
+
+                pcall(function() workspace:WaitForChild("InstaLoadFunction", 1):InvokeServer() end)
+                notify('Text Generator', 'Building ' .. #meshedData .. ' blocks...', 5, 'info')
+
+                local spawnDelayRate = 1 / speedSlider.Value
+                local spawnBatchSize = math.max(1, math.ceil(0.015 / spawnDelayRate))
+                if maxModeToggle.Enabled then spawnDelayRate = 0; spawnBatchSize = 999999 end
+
+                local paintArgs = {}
+                local threadsCompleted = 0
+                
+                local sizeM = sizeSlider.Value / 10
+                local thickM = thickSlider.Value / 10
+                local surfaceY = (plotZone.Size.Y / 2) + (sizeM / 2)
+                local baseOffset = CFrame.new(offX.Value, offY.Value, offZ.Value) * CFrame.Angles(math.rad(rotX.Value), math.rad(rotY.Value), math.rad(rotZ.Value))
+
+                local unprocessedBlocks = {}
+                local blockAddedConn = playerBlocksFolder.ChildAdded:Connect(function(b)
+                    if not unprocessedBlocks[b.Name] then unprocessedBlocks[b.Name] = {} end
+                    table.insert(unprocessedBlocks[b.Name], b)
+                end)
+                textModule:Clean(blockAddedConn)
+
+                for i, block in ipairs(meshedData) do
+                    if not textModule.Enabled then break end
+
+                    local currentBlockType = getValidBlock()
+                    if not currentBlockType then
+                        notify('Error', 'Out of blocks! Built ' .. (i-1) .. '/' .. #meshedData, 10, 'alert')
+                        break
+                    end
+
+                    local relativePos = Vector3.new(block.x * sizeM, (block.y * sizeM) + surfaceY, thickM/2)
+                    local savedRelativeCFrame = baseOffset * CFrame.new(relativePos)
+                    local absoluteTargetCFrame = plotZone.CFrame:ToWorldSpace(savedRelativeCFrame)
+                    
+                    local wSize = block.w * sizeM
+                    local targetSize = Vector3.new(wSize, sizeM, thickM)
+
+                    task.spawn(function()
+                        local cCount = getCount(currentBlockType)
+                        buildRF:InvokeServer(currentBlockType, cCount, plotZone, savedRelativeCFrame, true, absoluteTargetCFrame, false)
+                        
+                        local spawnedBlock = nil
+                        for attempt = 1, 15 do 
+                            if not textModule.Enabled then break end
+                            local list = unprocessedBlocks[currentBlockType]
+                            if list and #list > 0 then
+                                for idx, b in ipairs(list) do
+                                    if b.Parent and (b:GetPivot().Position - absoluteTargetCFrame.Position).Magnitude < 10 then
+                                        spawnedBlock = b
+                                        table.remove(list, idx)
+                                        break
+                                    end
+                                end
+                            end
+                            if spawnedBlock then break end
+                            task.wait() 
+                        end
+                        
+                        if spawnedBlock and textModule.Enabled then
+                            task.spawn(function() scaleRF:InvokeServer(spawnedBlock, targetSize, absoluteTargetCFrame) end)
+                            table.insert(paintArgs, {spawnedBlock, block.c})
+                        end
+                        threadsCompleted = threadsCompleted + 1
+                    end)
+                    
+                    if spawnDelayRate > 0 then task.wait(spawnDelayRate) else
+                        if i % spawnBatchSize == 0 then task.wait() end
+                    end
+                end
+
+                while threadsCompleted < #meshedData and textModule.Enabled do task.wait() end
+                
+                if paintTool and #paintArgs > 0 then
+                    notify('Painting', 'Applying text colors...', 5, 'info')
+                    task.spawn(function() paintTool:WaitForChild("RF"):InvokeServer(paintArgs) end)
+                end
+
+                notify('Text Generator', '✅ Text Build Complete!', 5, 'info')
+                textModule:Toggle()
+            end)
+        end
+    })
+
+    -- =========================================================================
+    -- GENERATE / PREVIEW ACTION
+    -- =========================================================================
+    textModule:CreateButton({
+        Name = 'Fetch & Preview Text',
+        Function = function()
+            local textStr = textBox.Value
+            if not textStr or textStr == "" then notify('Error', 'Enter some text!', 5, 'alert') return end
+            
+            notify('Processing', 'Asking Python server to generate text...', 3, 'info')
+            
+            task.spawn(function()
+                local fontName = fontDropdown.Value .. ".ttf"
+                if fontDropdown.Value == "Comic Sans MS" then fontName = "comic.ttf" end
+                
+                local url = "http://localhost:8000/text?text=" .. HttpService:UrlEncode(textStr) .. 
+                            "&font=" .. fontName .. 
+                            "&density=" .. densitySlider.Value
+                
+                local suc, response = pcall(function() return game:HttpGet(url) end)
+                if not suc then notify('Server Error', 'Could not connect to Python localhost:8000', 5, 'alert') return end
+
+                local decoded = HttpService:JSONDecode(response)
+                if not decoded.success then notify('Python Error', decoded.error or 'Failed.', 5, 'alert') return end
+
+                cachedTextData = decoded.pixels
+                
+                local testMeshed = ProcessTextData(cachedTextData)
+                local origBlocks = #cachedTextData
+                local optBlocks = #testMeshed
+                local saved = origBlocks - optBlocks
+                
+                notify('Success', 'Text processed! Optimal Mesh: ' .. optBlocks .. ' blocks ('..saved..' blocks saved!).', 8, 'info')
+                
+                isPreviewing = true
+                LiveUpdatePreview()
+            end)
+        end
+    })
+
+    textModule:CreateButton({
+        Name = 'Clear Preview',
+        Function = function()
+            isPreviewing = false
+            if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
+        end
+    })
+
+    -- =========================================================================
+    -- UI COMPONENTS & SETTINGS
+    -- =========================================================================
+    textBox = textModule:CreateTextBox({ Name = 'Text to Generate', Default = "BABFT", Function = function() end })
+    fontDropdown = textModule:CreateDropdown({ Name = 'Font Style', List = {'arial', 'impact', 'tahoma', 'verdana', 'Comic Sans MS'}, Function = function() end })
+    
+    densitySlider = textModule:CreateSlider({ Name = 'Detail Density (Resolution)', Min = 10, Max = 100, Default = 40, Function = function() end })
+    sizeSlider = textModule:CreateSlider({ Name = 'Scale Multiplier (x10)', Min = 1, Max = 100, Default = 10, Function = LiveUpdatePreview })
+    thickSlider = textModule:CreateSlider({ Name = 'Thickness (Z Depth) (x10)', Min = 1, Max = 100, Default = 10, Function = LiveUpdatePreview })
+    
+    voxelToggle = textModule:CreateToggle({ Name = 'Voxel Mode (Disable Smoothing)', Default = false, Function = LiveUpdatePreview, Tooltip = 'Disables Greedy Meshing. Spawns thousands of cubes instead of long smooth blocks.' })
+
+    colorModeDropdown = textModule:CreateDropdown({ Name = 'Color & Gradient Mode', List = {'Solid Color', 'Gradient (Left-Right)', 'Gradient (Top-Bottom)', 'Rainbow (By Part)', 'Rainbow (Left-Right)', 'Rainbow (Top-Bottom)'}, Function = LiveUpdatePreview })
+    color1Slider = textModule:CreateColorSlider({ Name = 'Color 1 (Start)', DefaultHue = 1, DefaultSat = 1, DefaultValue = 1, DefaultOpacity = 1, Function = function(h, s, v) c1 = Color3.fromHSV(h, s, v); LiveUpdatePreview() end })
+    color2Slider = textModule:CreateColorSlider({ Name = 'Color 2 (End)', DefaultHue = 0.5, DefaultSat = 1, DefaultValue = 1, DefaultOpacity = 1, Function = function(h, s, v) c2 = Color3.fromHSV(h, s, v); LiveUpdatePreview() end })
+
+    offX = textModule:CreateSlider({ Name = 'Offset X', Min = -1000, Max = 1000, Default = 0, Function = LiveUpdatePreview })
+    offY = textModule:CreateSlider({ Name = 'Offset Y', Min = -1000, Max = 1000, Default = 100, Function = LiveUpdatePreview })
+    offZ = textModule:CreateSlider({ Name = 'Offset Z', Min = -1000, Max = 1000, Default = 0, Function = LiveUpdatePreview })
+    rotX = textModule:CreateSlider({ Name = 'Rotate X', Min = -180, Max = 180, Default = 0, Function = LiveUpdatePreview })
+    rotY = textModule:CreateSlider({ Name = 'Rotate Y', Min = -180, Max = 180, Default = 0, Function = LiveUpdatePreview })
+    rotZ = textModule:CreateSlider({ Name = 'Rotate Z', Min = -180, Max = 180, Default = 0, Function = LiveUpdatePreview })
+
+    blockDropdown = textModule:CreateDropdown({ Name = 'Base Block Type', List = getAvailableBlocks(), Function = function() end})
+    fallbackBox = textModule:CreateTextBox({ Name = 'Fallback Blocks (Comma Sep)', Default = "PlasticBlock, WoodBlock", Function = function() end })
+    speedSlider = textModule:CreateSlider({ Name = 'Spawn Speed', Min = 100, Max = 1000, Default = 500, Function = function() end })
+    maxModeToggle = textModule:CreateToggle({ Name = 'Max Mode (Lag Warning)', Default = false, Function = function() end })
+
+end)
+
+
+
+
+
+
 
 
 
