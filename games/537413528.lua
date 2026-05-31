@@ -1280,6 +1280,7 @@ end)
 
 
 
+
 run(function()
     local vape = shared.vape
     if not vape then return end
@@ -1289,10 +1290,13 @@ run(function()
     local lp = game:GetService("Players").LocalPlayer
 
     local shapeModule
-    local shapeDropdown, alignDropdown
+    local shapeDropdown, alignDropdown, voxelToggle
     local radiusSlider, heightSlider, sidesSlider, thickSlider, minorRadSlider
     local offX, offY, offZ
-    local rainbowToggle
+    
+    local rainbowToggle, rainbowMode
+    local rbDensity, rbSaturation, rbBrightness
+    
     local blockDropdown, fallbackBox
     local speedSlider, maxModeToggle
     
@@ -1330,7 +1334,7 @@ run(function()
     end
 
     -- =========================================================================
-    -- MATHEMATICAL SHAPE ENGINE
+    -- ADVANCED MATHEMATICAL SHAPE ENGINE
     -- =========================================================================
     local function GenerateShapeData()
         local parts = {}
@@ -1339,84 +1343,177 @@ run(function()
         local H = heightSlider.Value
         local sides = sidesSlider.Value
         local thick = thickSlider.Value
+        local isVoxel = voxelToggle.Enabled
         local align = alignDropdown.Value
-        local doRainbow = rainbowToggle.Enabled
         
-        -- Master CFrame Offset
+        local doRainbow = rainbowToggle.Enabled
+        local rMode = doRainbow and rainbowMode.Value or "By Part"
+        local rDens = doRainbow and (rbDensity.Value / 10) or 1
+        local rSat = doRainbow and (rbSaturation.Value / 100) or 1
+        local rBri = doRainbow and (rbBrightness.Value / 100) or 1
+        
         local baseOffset = CFrame.new(offX.Value, offY.Value, offZ.Value)
 
-        local function addRing(y, r, y_max_for_color)
-            if r <= 0.1 then return end
-            
-            local actual_r = r
-            if align == "Outside" then actual_r = r + (thick/2)
-            elseif align == "Inside" then actual_r = r - (thick/2) end
-            
-            -- Prevent crossing center
-            if actual_r <= 0.1 then actual_r = 0.1 end 
-            
-            -- Calculate precise chord length (tangent for smooth joining)
-            local width = 2 * actual_r * math.tan(math.pi / sides)
-            
-            for i = 1, sides do
-                local angle = (i - 1) * ((math.pi * 2) / sides)
-                
-                -- Center at 0, rotate, push out by radius
-                local cf = baseOffset * CFrame.new(0, y, 0) * CFrame.Angles(0, angle, 0) * CFrame.new(0, 0, -actual_r)
-                local size = Vector3.new(width, thick, thick)
-                local color = Color3.new(1, 1, 1)
-
-                if doRainbow then
-                    local hue = (y / math.max(y_max_for_color, 0.1)) % 1
-                    color = Color3.fromHSV(hue, 1, 1)
-                end
-
-                table.insert(parts, {CFrame = cf, Size = size, Color = color})
-            end
+        local function getAdjustedR(baseR)
+            if align == "Outside" then return baseR + (thick/2)
+            elseif align == "Inside" then return baseR - (thick/2)
+            else return baseR end
         end
 
-        if shape == "Circle (Ring)" then
-            addRing(thick/2, R, thick)
-            
-        elseif shape == "Cylinder" then
-            for y = 0, H, thick do 
-                addRing(y + (thick/2), R, H) 
+        local function getColor(index, total, y, max_y)
+            if not doRainbow then return Color3.new(1,1,1) end
+            local hue = 0
+            if rMode == "By Part" then
+                hue = (index / total) * rDens
+            else
+                local safe_max = math.max(max_y, 0.1)
+                hue = ((y + safe_max) / (safe_max * 2)) * rDens
             end
-            
-        elseif shape == "Sphere" then
-            local steps = math.floor((2 * R) / thick)
-            for i = 0, steps do
-                local y = -R + (i * thick) + (thick/2)
-                local slice_r = math.sqrt(math.max(0, R^2 - y^2))
-                addRing(y + R, slice_r, 2 * R)
+            return Color3.fromHSV(hue % 1, rSat, rBri)
+        end
+
+        local adjusted_R = math.max(getAdjustedR(R), 0.1)
+
+        -- -----------------------------------------------------------------
+        -- SMOOTH 3D SHELL GENERATION (Non-Voxel)
+        -- -----------------------------------------------------------------
+        if not isVoxel then
+            if shape == "Circle (Ring)" or shape == "Cylinder" then
+                local actual_H = (shape == "Circle (Ring)") and thick or H
+                local total_parts = sides
+                for i = 1, sides do
+                    local theta = i * (math.pi * 2) / sides
+                    local W = 2 * adjusted_R * math.tan(math.pi / sides)
+                    
+                    local cf = baseOffset * CFrame.Angles(0, theta, 0) * CFrame.new(0, actual_H/2, -adjusted_R)
+                    local size = Vector3.new(W, actual_H, thick)
+                    local color = getColor(i, total_parts, actual_H/2, actual_H)
+                    table.insert(parts, {CFrame = cf, Size = size, Color = color})
+                end
+
+            elseif shape == "Sphere" or shape == "Dome" then
+                local lat_steps = math.max(3, math.floor(sides / 2))
+                local start_i = (shape == "Dome") and math.floor(lat_steps/2) or 0
+                local total_parts = sides * (lat_steps - start_i)
+                local part_idx = 0
+                
+                for i = start_i, lat_steps - 1 do
+                    local phi1 = -(math.pi/2) + (i * math.pi / lat_steps)
+                    local phi2 = -(math.pi/2) + ((i+1) * math.pi / lat_steps)
+                    local mid_phi = (phi1 + phi2) / 2
+                    
+                    local seg_height = adjusted_R * (math.pi / lat_steps)
+                    local r_lat = adjusted_R * math.cos(mid_phi)
+                    local seg_width = 2 * r_lat * math.tan(math.pi / sides)
+                    local y_pos = adjusted_R * math.sin(mid_phi)
+                    
+                    for j = 1, sides do
+                        part_idx = part_idx + 1
+                        local theta = j * (math.pi * 2) / sides
+                        local cf = baseOffset * CFrame.Angles(0, theta, 0) * CFrame.Angles(mid_phi, 0, 0) * CFrame.new(0, 0, -adjusted_R)
+                        local size = Vector3.new(seg_width, seg_height, thick)
+                        local color = getColor(part_idx, total_parts, y_pos, adjusted_R)
+                        table.insert(parts, {CFrame = cf, Size = size, Color = color})
+                    end
+                end
+
+            elseif shape == "Torus" then
+                local minorR = minorRadSlider.Value
+                local minor_steps = math.max(3, math.floor(sides * 0.75))
+                local total_parts = sides * minor_steps
+                local part_idx = 0
+                
+                for i = 1, sides do
+                    local theta = i * (math.pi * 2) / sides
+                    for j = 1, minor_steps do
+                        part_idx = part_idx + 1
+                        local phi = j * (math.pi * 2) / minor_steps
+                        
+                        local cf = baseOffset * CFrame.Angles(0, theta, 0) * CFrame.new(0, minorR, -adjusted_R) * CFrame.Angles(phi, 0, 0) * CFrame.new(0, 0, -minorR)
+                        local r_lat = adjusted_R + (minorR * math.cos(phi))
+                        local seg_width = 2 * r_lat * math.tan(math.pi / sides)
+                        local seg_height = 2 * minorR * math.tan(math.pi / minor_steps)
+                        
+                        local size = Vector3.new(seg_width, seg_height, thick)
+                        local color = getColor(part_idx, total_parts, minorR * math.sin(phi), minorR)
+                        table.insert(parts, {CFrame = cf, Size = size, Color = color})
+                    end
+                end
+
+            elseif shape == "Pyramid" then
+                local total_parts = sides
+                for i = 1, sides do
+                    local theta = (i - 0.5) * (math.pi * 2) / sides
+                    local D = adjusted_R * math.cos(math.pi / sides) 
+                    local W = 2 * adjusted_R * math.sin(math.pi / sides) 
+                    
+                    local face_length = math.sqrt(H^2 + D^2)
+                    local slope_angle = math.atan2(H, D)
+                    
+                    local cf = baseOffset * CFrame.Angles(0, theta, 0) * CFrame.new(0, 0, -D) * CFrame.Angles(math.pi/2 - slope_angle, 0, 0) * CFrame.new(0, face_length / 2, 0)
+                    local size = Vector3.new(W, face_length, thick)
+                    local color = getColor(i, total_parts, H/2, H)
+                    table.insert(parts, {CFrame = cf, Size = size, Color = color})
+                end
             end
-            
-        elseif shape == "Dome" then
-            local steps = math.floor(R / thick)
-            for i = 0, steps do
-                local y = (i * thick) + (thick/2)
-                local slice_r = math.sqrt(math.max(0, R^2 - y^2))
-                addRing(y, slice_r, R)
+
+        -- -----------------------------------------------------------------
+        -- VOXEL GENERATION (Layered Stacking)
+        -- -----------------------------------------------------------------
+        else
+            local function addVoxelRing(y, r, total_rings, current_ring)
+                if r <= 0.1 then return end
+                local actual_r = r
+                if align == "Outside" then actual_r = r + (thick/2)
+                elseif align == "Inside" then actual_r = r - (thick/2) end
+                actual_r = math.max(actual_r, 0.1)
+                
+                local width = 2 * actual_r * math.tan(math.pi / sides)
+                for i = 1, sides do
+                    local angle = (i - 1) * ((math.pi * 2) / sides)
+                    local cf = baseOffset * CFrame.new(0, y, 0) * CFrame.Angles(0, angle, 0) * CFrame.new(0, 0, -actual_r)
+                    local size = Vector3.new(width, thick, thick)
+                    local color = getColor((current_ring * sides) + i, total_rings * sides, y, H > 0 and H or R)
+                    table.insert(parts, {CFrame = cf, Size = size, Color = color})
+                end
             end
-            
-        elseif shape == "Pyramid" then
-            local steps = math.floor(H / thick)
-            for i = 0, steps do
-                local y = (i * thick) + (thick/2)
-                local slice_r = R * (1 - (y / H))
-                addRing(y, slice_r, H)
-            end
-            
-        elseif shape == "Torus" then
-            local minorR = minorRadSlider.Value
-            local steps = math.floor((2 * minorR) / thick)
-            for i = 0, steps do
-                local y = -minorR + (i * thick) + (thick/2)
-                local slice_dist = math.sqrt(math.max(0, minorR^2 - y^2))
-                -- Two rings form the cross section at this height
-                addRing(y + minorR, R + slice_dist, 2 * minorR)
-                if slice_dist > thick then
-                    addRing(y + minorR, R - slice_dist, 2 * minorR)
+
+            if shape == "Circle (Ring)" then
+                addVoxelRing(thick/2, R, 1, 0)
+            elseif shape == "Cylinder" then
+                local steps = math.floor(H / thick)
+                for i = 0, steps do addVoxelRing((i * thick) + (thick/2), R, steps, i) end
+            elseif shape == "Sphere" then
+                local steps = math.floor((2 * R) / thick)
+                for i = 0, steps do
+                    local y = -R + (i * thick) + (thick/2)
+                    local slice_r = math.sqrt(math.max(0, R^2 - y^2))
+                    addVoxelRing(y + R, slice_r, steps, i)
+                end
+            elseif shape == "Dome" then
+                local steps = math.floor(R / thick)
+                for i = 0, steps do
+                    local y = (i * thick) + (thick/2)
+                    local slice_r = math.sqrt(math.max(0, R^2 - y^2))
+                    addVoxelRing(y, slice_r, steps, i)
+                end
+            elseif shape == "Pyramid" then
+                local steps = math.floor(H / thick)
+                for i = 0, steps do
+                    local y = (i * thick) + (thick/2)
+                    local slice_r = R * (1 - (y / H))
+                    addVoxelRing(y, slice_r, steps, i)
+                end
+            elseif shape == "Torus" then
+                local minorR = minorRadSlider.Value
+                local steps = math.floor((2 * minorR) / thick)
+                for i = 0, steps do
+                    local y = -minorR + (i * thick) + (thick/2)
+                    local slice_dist = math.sqrt(math.max(0, minorR^2 - y^2))
+                    addVoxelRing(y + minorR, R + slice_dist, steps*2, i)
+                    if slice_dist > thick then
+                        addVoxelRing(y + minorR, R - slice_dist, steps*2, i + steps)
+                    end
                 end
             end
         end
@@ -1442,7 +1539,7 @@ run(function()
             local ghost = Instance.new("Part")
             ghost.Anchored = true
             ghost.CanCollide = false
-            ghost.Transparency = 0.5
+            ghost.Transparency = 0.3
             ghost.Color = pData.Color
             ghost.Size = pData.Size
             ghost.CFrame = plotZone.CFrame:ToWorldSpace(CFrame.new(0, surfaceY, 0) * pData.CFrame)
@@ -1455,7 +1552,7 @@ run(function()
     -- =========================================================================
     shapeModule = vape.Categories['BABFT Tools']:CreateModule({
         Name = 'Shape Builder',
-        Tooltip = 'Mathematically constructs 3D shapes. Uses Backpack tools natively.',
+        Tooltip = 'Mathematically constructs 3D shapes natively from your Backpack.',
         Function = function(callback)
             if not callback then return end
             
@@ -1464,9 +1561,13 @@ run(function()
                 local totalNeeded = #partsData
                 if totalNeeded == 0 then shapeModule:Toggle(); return end
 
-                local buildTool = lp.Backpack:FindFirstChild("BuildingTool") or (lp.Character and lp.Character:FindFirstChild("BuildingTool"))
-                local scaleTool = lp.Backpack:FindFirstChild("ScalingTool") or (lp.Character and lp.Character:FindFirstChild("ScalingTool"))
-                local paintTool = lp.Backpack:FindFirstChild("PaintingTool") or (lp.Character and lp.Character:FindFirstChild("PaintingTool"))
+                local function getTool(name)
+                    return lp.Backpack:FindFirstChild(name) or (lp.Character and lp.Character:FindFirstChild(name))
+                end
+
+                local buildTool = getTool("BuildingTool")
+                local scaleTool = getTool("ScalingTool")
+                local paintTool = getTool("PaintingTool")
 
                 if not buildTool or not scaleTool then
                     notify('Error', 'Missing Building or Scaling Tool in Backpack!', 5, 'alert')
@@ -1564,7 +1665,8 @@ run(function()
 
                 while threadsCompleted < totalNeeded and shapeModule.Enabled do task.wait() end
                 
-                if paintTool and #paintArgs > 0 then
+                if paintTool and #paintArgs > 0 and rainbowToggle.Enabled then
+                    notify('Painting', 'Applying Rainbow Gradient...', 5, 'info')
                     task.spawn(function() paintTool:WaitForChild("RF"):InvokeServer(paintArgs) end)
                 end
 
@@ -1581,7 +1683,7 @@ run(function()
         Name = 'Preview Shape',
         Function = function()
             isPreviewing = true
-            notify('Preview', 'Shape preview activated. Updates in real-time!', 3, 'info')
+            notify('Preview', 'Live preview activated.', 3, 'info')
             LiveUpdatePreview()
         end
     })
@@ -1591,33 +1693,66 @@ run(function()
         Function = function()
             isPreviewing = false
             if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
-            notify('Preview', 'Preview cleared.', 3, 'info')
         end
     })
 
-    -- Dimensions and Math
-    shapeDropdown = shapeModule:CreateDropdown({ Name = 'Shape', List = {'Circle (Ring)', 'Cylinder', 'Sphere', 'Dome', 'Pyramid', 'Torus'}, Function = LiveUpdatePreview })
-    radiusSlider = shapeModule:CreateSlider({ Name = 'Radius / Base', Min = 2, Max = 300, Default = 20, Function = LiveUpdatePreview })
-    heightSlider = shapeModule:CreateSlider({ Name = 'Height (Cyl/Pyramid)', Min = 2, Max = 300, Default = 30, Function = LiveUpdatePreview })
-    minorRadSlider = shapeModule:CreateSlider({ Name = 'Torus Minor Radius', Min = 2, Max = 50, Default = 6, Function = LiveUpdatePreview })
+    -- Automatic Sides Refresh
+    shapeDropdown = shapeModule:CreateDropdown({ 
+        Name = 'Shape Type', 
+        List = {'Circle (Ring)', 'Cylinder', 'Sphere', 'Dome', 'Pyramid', 'Torus'}, 
+        Function = function(val)
+            if val == "Pyramid" then sidesSlider:SetValue(4)
+            elseif val == "Sphere" or val == "Dome" then sidesSlider:SetValue(24)
+            elseif val == "Torus" then sidesSlider:SetValue(32)
+            else sidesSlider:SetValue(36) end
+            
+            minorRadSlider.Object.Visible = (val == "Torus")
+            heightSlider.Object.Visible = (val == "Cylinder" or val == "Pyramid")
+            LiveUpdatePreview()
+        end 
+    })
+
+    voxelToggle = shapeModule:CreateToggle({ Name = 'Voxel Shapes (Minecraft Style)', Default = false, Function = LiveUpdatePreview, Tooltip = 'If false, creates ultra-smooth 3D models using angled facets.' })
+
+    radiusSlider = shapeModule:CreateSlider({ Name = 'Radius / Base Size', Min = 2, Max = 300, Default = 20, Function = LiveUpdatePreview })
+    heightSlider = shapeModule:CreateSlider({ Name = 'Height', Min = 2, Max = 300, Default = 30, Function = LiveUpdatePreview })
+    minorRadSlider = shapeModule:CreateSlider({ Name = 'Torus Thickness (Minor Radius)', Min = 2, Max = 50, Default = 8, Function = LiveUpdatePreview })
     
-    sidesSlider = shapeModule:CreateSlider({ Name = 'Sides (3=Tri, 6=Hex)', Min = 3, Max = 100, Default = 36, Function = LiveUpdatePreview })
+    sidesSlider = shapeModule:CreateSlider({ Name = 'Sides (Tri=3, Hex=6)', Min = 3, Max = 100, Default = 36, Function = LiveUpdatePreview })
     thickSlider = shapeModule:CreateSlider({ Name = 'Block Thickness', Min = 1, Max = 20, Default = 2, Function = LiveUpdatePreview })
     alignDropdown = shapeModule:CreateDropdown({ Name = 'Alignment', List = {'Middle', 'Outside', 'Inside'}, Function = LiveUpdatePreview })
     
-    -- Offsets and Styling
+    -- Rainbow System
+    rainbowToggle = shapeModule:CreateToggle({ 
+        Name = 'Rainbow Gradient', 
+        Default = false, 
+        Function = function(val) 
+            rainbowMode.Object.Visible = val
+            rbDensity.Object.Visible = val
+            rbSaturation.Object.Visible = val
+            rbBrightness.Object.Visible = val
+            LiveUpdatePreview()
+        end 
+    })
+    
+    rainbowMode = shapeModule:CreateDropdown({ Name = 'Gradient Mode', List = {'By Part', 'By Layer'}, Function = LiveUpdatePreview, Visible = false, Darker = true })
+    rbDensity = shapeModule:CreateSlider({ Name = 'Gradient Density (x10)', Min = 1, Max = 100, Default = 10, Function = LiveUpdatePreview, Visible = false, Darker = true })
+    rbSaturation = shapeModule:CreateSlider({ Name = 'Saturation (%)', Min = 0, Max = 100, Default = 100, Function = LiveUpdatePreview, Visible = false, Darker = true })
+    rbBrightness = shapeModule:CreateSlider({ Name = 'Brightness (%)', Min = 0, Max = 100, Default = 100, Function = LiveUpdatePreview, Visible = false, Darker = true })
+
     offX = shapeModule:CreateSlider({ Name = 'Offset X', Min = -500, Max = 500, Default = 0, Function = LiveUpdatePreview })
     offY = shapeModule:CreateSlider({ Name = 'Offset Y', Min = -500, Max = 500, Default = 0, Function = LiveUpdatePreview })
     offZ = shapeModule:CreateSlider({ Name = 'Offset Z', Min = -500, Max = 500, Default = 0, Function = LiveUpdatePreview })
-    rainbowToggle = shapeModule:CreateToggle({ Name = 'Rainbow Gradient', Default = false, Function = LiveUpdatePreview })
 
-    -- Build Mechanics
     blockDropdown = shapeModule:CreateDropdown({ Name = 'Base Block Type', List = getAvailableBlocks(), Function = function() end})
     fallbackBox = shapeModule:CreateTextBox({ Name = 'Fallback Blocks (Comma Sep)', Default = "PlasticBlock, WoodBlock", Function = function() end })
+    
     speedSlider = shapeModule:CreateSlider({ Name = 'Spawn Speed', Min = 100, Max = 1000, Default = 500, Function = function() end })
     maxModeToggle = shapeModule:CreateToggle({ Name = 'Max Mode (Lag Warning)', Default = false, Function = function() end })
 
 end)
+
+
 
 
 
