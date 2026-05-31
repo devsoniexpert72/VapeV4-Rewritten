@@ -1268,6 +1268,359 @@ end)
 
 
 
+
+
+
+
+
+--shaow utils start here BE CAREFUL
+
+
+
+
+
+
+run(function()
+    local vape = shared.vape
+    if not vape then return end
+
+    local HttpService = game:GetService("HttpService")
+    local repStorage = game:GetService("ReplicatedStorage")
+    local lp = game:GetService("Players").LocalPlayer
+
+    local shapeModule
+    local shapeDropdown, alignDropdown
+    local radiusSlider, heightSlider, sidesSlider, thickSlider, minorRadSlider
+    local offX, offY, offZ
+    local rainbowToggle
+    local blockDropdown, fallbackBox
+    local speedSlider, maxModeToggle
+    
+    local previewFolderName = "Shape_Builder_Preview"
+    local isPreviewing = false
+
+    local function notify(title, text, duration, typeTheme)
+        if vape.CreateNotification then
+            vape:CreateNotification(title, text, duration or 5, typeTheme or 'info')
+        end
+    end
+
+    local function getAvailableBlocks()
+        local blocks = {}
+        local buildingParts = repStorage:FindFirstChild("BuildingParts")
+        if buildingParts then
+            for _, v in ipairs(buildingParts:GetChildren()) do
+                if string.find(v.Name, "Block") then table.insert(blocks, v.Name) end
+            end
+        end
+        if #blocks == 0 then table.insert(blocks, "PlasticBlock") end
+        return blocks
+    end
+
+    local function getPlotZone()
+        local t = tostring(lp.Team)
+        local p = "WhiteZone"
+        if t=="red" then p="Really redZone" elseif t=="blue" then p="Really blueZone" elseif t=="black" then p="BlackZone" elseif t=="yellow" then p="New YellerZone" elseif t=="magenta" then p="MagentaZone" elseif t=="green" then p="CamoZone" end
+        return workspace:FindFirstChild(p)
+    end
+
+    local function getCount(name)
+        local d = lp:WaitForChild("Data"):FindFirstChild(name)
+        return (d and d:IsA("IntValue")) and d.Value or 0
+    end
+
+    -- =========================================================================
+    -- MATHEMATICAL SHAPE ENGINE
+    -- =========================================================================
+    local function GenerateShapeData()
+        local parts = {}
+        local shape = shapeDropdown.Value
+        local R = radiusSlider.Value
+        local H = heightSlider.Value
+        local sides = sidesSlider.Value
+        local thick = thickSlider.Value
+        local align = alignDropdown.Value
+        local doRainbow = rainbowToggle.Enabled
+        
+        -- Master CFrame Offset
+        local baseOffset = CFrame.new(offX.Value, offY.Value, offZ.Value)
+
+        local function addRing(y, r, y_max_for_color)
+            if r <= 0.1 then return end
+            
+            local actual_r = r
+            if align == "Outside" then actual_r = r + (thick/2)
+            elseif align == "Inside" then actual_r = r - (thick/2) end
+            
+            -- Prevent crossing center
+            if actual_r <= 0.1 then actual_r = 0.1 end 
+            
+            -- Calculate precise chord length (tangent for smooth joining)
+            local width = 2 * actual_r * math.tan(math.pi / sides)
+            
+            for i = 1, sides do
+                local angle = (i - 1) * ((math.pi * 2) / sides)
+                
+                -- Center at 0, rotate, push out by radius
+                local cf = baseOffset * CFrame.new(0, y, 0) * CFrame.Angles(0, angle, 0) * CFrame.new(0, 0, -actual_r)
+                local size = Vector3.new(width, thick, thick)
+                local color = Color3.new(1, 1, 1)
+
+                if doRainbow then
+                    local hue = (y / math.max(y_max_for_color, 0.1)) % 1
+                    color = Color3.fromHSV(hue, 1, 1)
+                end
+
+                table.insert(parts, {CFrame = cf, Size = size, Color = color})
+            end
+        end
+
+        if shape == "Circle (Ring)" then
+            addRing(thick/2, R, thick)
+            
+        elseif shape == "Cylinder" then
+            for y = 0, H, thick do 
+                addRing(y + (thick/2), R, H) 
+            end
+            
+        elseif shape == "Sphere" then
+            local steps = math.floor((2 * R) / thick)
+            for i = 0, steps do
+                local y = -R + (i * thick) + (thick/2)
+                local slice_r = math.sqrt(math.max(0, R^2 - y^2))
+                addRing(y + R, slice_r, 2 * R)
+            end
+            
+        elseif shape == "Dome" then
+            local steps = math.floor(R / thick)
+            for i = 0, steps do
+                local y = (i * thick) + (thick/2)
+                local slice_r = math.sqrt(math.max(0, R^2 - y^2))
+                addRing(y, slice_r, R)
+            end
+            
+        elseif shape == "Pyramid" then
+            local steps = math.floor(H / thick)
+            for i = 0, steps do
+                local y = (i * thick) + (thick/2)
+                local slice_r = R * (1 - (y / H))
+                addRing(y, slice_r, H)
+            end
+            
+        elseif shape == "Torus" then
+            local minorR = minorRadSlider.Value
+            local steps = math.floor((2 * minorR) / thick)
+            for i = 0, steps do
+                local y = -minorR + (i * thick) + (thick/2)
+                local slice_dist = math.sqrt(math.max(0, minorR^2 - y^2))
+                -- Two rings form the cross section at this height
+                addRing(y + minorR, R + slice_dist, 2 * minorR)
+                if slice_dist > thick then
+                    addRing(y + minorR, R - slice_dist, 2 * minorR)
+                end
+            end
+        end
+
+        return parts
+    end
+
+    local function LiveUpdatePreview()
+        if not isPreviewing then return end
+        
+        local plotZone = getPlotZone()
+        if not plotZone then return end
+
+        if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
+        local previewFolder = Instance.new("Folder")
+        previewFolder.Name = previewFolderName
+        previewFolder.Parent = workspace
+
+        local partsData = GenerateShapeData()
+        local surfaceY = plotZone.Size.Y / 2
+        
+        for _, pData in ipairs(partsData) do
+            local ghost = Instance.new("Part")
+            ghost.Anchored = true
+            ghost.CanCollide = false
+            ghost.Transparency = 0.5
+            ghost.Color = pData.Color
+            ghost.Size = pData.Size
+            ghost.CFrame = plotZone.CFrame:ToWorldSpace(CFrame.new(0, surfaceY, 0) * pData.CFrame)
+            ghost.Parent = previewFolder
+        end
+    end
+
+    -- =========================================================================
+    -- MODULE DEFINITION
+    -- =========================================================================
+    shapeModule = vape.Categories['BABFT Tools']:CreateModule({
+        Name = 'Shape Builder',
+        Tooltip = 'Mathematically constructs 3D shapes. Uses Backpack tools natively.',
+        Function = function(callback)
+            if not callback then return end
+            
+            task.spawn(function()
+                local partsData = GenerateShapeData()
+                local totalNeeded = #partsData
+                if totalNeeded == 0 then shapeModule:Toggle(); return end
+
+                local buildTool = lp.Backpack:FindFirstChild("BuildingTool") or (lp.Character and lp.Character:FindFirstChild("BuildingTool"))
+                local scaleTool = lp.Backpack:FindFirstChild("ScalingTool") or (lp.Character and lp.Character:FindFirstChild("ScalingTool"))
+                local paintTool = lp.Backpack:FindFirstChild("PaintingTool") or (lp.Character and lp.Character:FindFirstChild("PaintingTool"))
+
+                if not buildTool or not scaleTool then
+                    notify('Error', 'Missing Building or Scaling Tool in Backpack!', 5, 'alert')
+                    shapeModule:Toggle() return
+                end
+
+                local buildRF = buildTool:WaitForChild("RF")
+                local scaleRF = scaleTool:WaitForChild("RF")
+                local plotZone = getPlotZone()
+                local playerBlocksFolder = workspace:WaitForChild("Blocks"):WaitForChild(lp.Name)
+
+                local fallbacks = {}
+                for match in fallbackBox.Value:gmatch("[^,]+") do table.insert(fallbacks, match:match("^%s*(.-)%s*$")) end
+                local consumedTracker = {}
+                local baseBlock = blockDropdown.Value
+
+                local function getValidBlock()
+                    local amtUsed = consumedTracker[baseBlock] or 0
+                    if getCount(baseBlock) > amtUsed then 
+                        consumedTracker[baseBlock] = amtUsed + 1
+                        return baseBlock 
+                    end
+                    for _, fb in ipairs(fallbacks) do
+                        local fbUsed = consumedTracker[fb] or 0
+                        if getCount(fb) > fbUsed then 
+                            consumedTracker[fb] = fbUsed + 1
+                            return fb 
+                        end
+                    end
+                    return nil
+                end
+
+                notify('Shape Builder', 'Spawning ' .. totalNeeded .. ' parts...', 5, 'info')
+                pcall(function() workspace:WaitForChild("InstaLoadFunction", 1):InvokeServer() end)
+
+                local spawnDelayRate = 1 / speedSlider.Value
+                local spawnBatchSize = math.max(1, math.ceil(0.015 / spawnDelayRate))
+                if maxModeToggle.Enabled then spawnDelayRate = 0; spawnBatchSize = 999999 end
+
+                local paintArgs = {}
+                local threadsCompleted = 0
+                local surfaceY = plotZone.Size.Y / 2
+                
+                local unprocessedBlocks = {}
+                local blockAddedConn = playerBlocksFolder.ChildAdded:Connect(function(b)
+                    if not unprocessedBlocks[b.Name] then unprocessedBlocks[b.Name] = {} end
+                    table.insert(unprocessedBlocks[b.Name], b)
+                end)
+                shapeModule:Clean(blockAddedConn)
+
+                for i, pData in ipairs(partsData) do
+                    if not shapeModule.Enabled then break end
+
+                    local currentBlockType = getValidBlock()
+                    if not currentBlockType then
+                        notify('Error', 'Ran out of blocks at ' .. (i-1) .. '/' .. totalNeeded, 10, 'alert')
+                        break
+                    end
+
+                    local savedRelativeCFrame = CFrame.new(0, surfaceY, 0) * pData.CFrame
+                    local absoluteTargetCFrame = plotZone.CFrame:ToWorldSpace(savedRelativeCFrame)
+                    
+                    task.spawn(function()
+                        local currentTotalCount = getCount(currentBlockType)
+                        buildRF:InvokeServer(currentBlockType, currentTotalCount, plotZone, savedRelativeCFrame, true, absoluteTargetCFrame, false)
+                        
+                        local spawnedBlock = nil
+                        for attempt = 1, 15 do 
+                            if not shapeModule.Enabled then break end
+                            local list = unprocessedBlocks[currentBlockType]
+                            if list and #list > 0 then
+                                for idx, b in ipairs(list) do
+                                    if b.Parent and (b:GetPivot().Position - absoluteTargetCFrame.Position).Magnitude < 10 then
+                                        spawnedBlock = b
+                                        table.remove(list, idx)
+                                        break
+                                    end
+                                end
+                            end
+                            if spawnedBlock then break end
+                            task.wait() 
+                        end
+                        
+                        if spawnedBlock and shapeModule.Enabled then
+                            task.spawn(function() scaleRF:InvokeServer(spawnedBlock, pData.Size, absoluteTargetCFrame) end)
+                            table.insert(paintArgs, {spawnedBlock, pData.Color})
+                        end
+                        threadsCompleted = threadsCompleted + 1
+                    end)
+                    
+                    if spawnDelayRate > 0 then task.wait(spawnDelayRate) else
+                        if i % spawnBatchSize == 0 then task.wait() end
+                    end
+                end
+
+                while threadsCompleted < totalNeeded and shapeModule.Enabled do task.wait() end
+                
+                if paintTool and #paintArgs > 0 then
+                    task.spawn(function() paintTool:WaitForChild("RF"):InvokeServer(paintArgs) end)
+                end
+
+                notify('Shape Builder', '✅ Shape Built Successfully!', 5, 'info')
+                shapeModule:Toggle()
+            end)
+        end
+    })
+
+    -- =========================================================================
+    -- UI COMPONENTS & LISTENERS
+    -- =========================================================================
+    shapeModule:CreateButton({
+        Name = 'Preview Shape',
+        Function = function()
+            isPreviewing = true
+            notify('Preview', 'Shape preview activated. Updates in real-time!', 3, 'info')
+            LiveUpdatePreview()
+        end
+    })
+
+    shapeModule:CreateButton({
+        Name = 'Clear Preview',
+        Function = function()
+            isPreviewing = false
+            if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
+            notify('Preview', 'Preview cleared.', 3, 'info')
+        end
+    })
+
+    -- Dimensions and Math
+    shapeDropdown = shapeModule:CreateDropdown({ Name = 'Shape', List = {'Circle (Ring)', 'Cylinder', 'Sphere', 'Dome', 'Pyramid', 'Torus'}, Function = LiveUpdatePreview })
+    radiusSlider = shapeModule:CreateSlider({ Name = 'Radius / Base', Min = 2, Max = 300, Default = 20, Function = LiveUpdatePreview })
+    heightSlider = shapeModule:CreateSlider({ Name = 'Height (Cyl/Pyramid)', Min = 2, Max = 300, Default = 30, Function = LiveUpdatePreview })
+    minorRadSlider = shapeModule:CreateSlider({ Name = 'Torus Minor Radius', Min = 2, Max = 50, Default = 6, Function = LiveUpdatePreview })
+    
+    sidesSlider = shapeModule:CreateSlider({ Name = 'Sides (3=Tri, 6=Hex)', Min = 3, Max = 100, Default = 36, Function = LiveUpdatePreview })
+    thickSlider = shapeModule:CreateSlider({ Name = 'Block Thickness', Min = 1, Max = 20, Default = 2, Function = LiveUpdatePreview })
+    alignDropdown = shapeModule:CreateDropdown({ Name = 'Alignment', List = {'Middle', 'Outside', 'Inside'}, Function = LiveUpdatePreview })
+    
+    -- Offsets and Styling
+    offX = shapeModule:CreateSlider({ Name = 'Offset X', Min = -500, Max = 500, Default = 0, Function = LiveUpdatePreview })
+    offY = shapeModule:CreateSlider({ Name = 'Offset Y', Min = -500, Max = 500, Default = 0, Function = LiveUpdatePreview })
+    offZ = shapeModule:CreateSlider({ Name = 'Offset Z', Min = -500, Max = 500, Default = 0, Function = LiveUpdatePreview })
+    rainbowToggle = shapeModule:CreateToggle({ Name = 'Rainbow Gradient', Default = false, Function = LiveUpdatePreview })
+
+    -- Build Mechanics
+    blockDropdown = shapeModule:CreateDropdown({ Name = 'Base Block Type', List = getAvailableBlocks(), Function = function() end})
+    fallbackBox = shapeModule:CreateTextBox({ Name = 'Fallback Blocks (Comma Sep)', Default = "PlasticBlock, WoodBlock", Function = function() end })
+    speedSlider = shapeModule:CreateSlider({ Name = 'Spawn Speed', Min = 100, Max = 1000, Default = 500, Function = function() end })
+    maxModeToggle = shapeModule:CreateToggle({ Name = 'Max Mode (Lag Warning)', Default = false, Function = function() end })
+
+end)
+
+
+
 --Ends here
 
 
