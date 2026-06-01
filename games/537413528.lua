@@ -2169,6 +2169,15 @@ end)
 --VIDOE LOADER MODUKE BE CAR3FULL!!!
 
 
+
+
+
+
+
+
+
+
+
 run(function()
     local vape = shared.vape
     if not vape then return end
@@ -2177,15 +2186,15 @@ run(function()
     local repStorage = game:GetService("ReplicatedStorage")
     local lp = game:GetService("Players").LocalPlayer
 
-    local gifModule
+    local videoModule
     local linkBox, blockDropdown, fallbackBox
     local resSlider, partSizeSlider, fpsSlider
     local loopToggle, speedSlider, maxModeToggle
     local offX, offY, offZ
     
-    local previewFolderName = "Gif_Preview_Hologram"
-    local cachedGifData = nil
-    local isPreviewing = false
+    local previewFolderName = "Video_Preview_Hologram"
+    local cachedVideoData = nil
+    local isPlaying = false
 
     local function notify(title, text, duration, typeTheme)
         if vape.CreateNotification then vape:CreateNotification(title, text, duration or 5, typeTheme or 'info') end
@@ -2198,7 +2207,6 @@ run(function()
         return workspace:FindFirstChild(p)
     end
 
-    -- Strict block checking ending in "Block"
     local function getAvailableBlocks()
         local blocks = {}
         local buildingParts = repStorage:FindFirstChild("BuildingParts")
@@ -2216,8 +2224,11 @@ run(function()
         return (d and d:IsA("IntValue")) and d.Value or 0
     end
 
-    local function LiveUpdatePreview()
-        if not isPreviewing or not cachedGifData then return end
+    -- =========================================================================
+    -- HOLOGRAM PREVIEW GENERATOR
+    -- =========================================================================
+    local function GeneratePreviewHologram()
+        if not cachedVideoData then return end
         local plotZone = getPlotZone()
         if not plotZone then return end
 
@@ -2228,49 +2239,54 @@ run(function()
 
         local sizeMult = partSizeSlider.Value / 10
         local surfaceY = (plotZone.Size.Y / 2) + (sizeMult / 2)
-        local halfWidth = (cachedGifData.width * sizeMult) / 2
+        local halfWidth = (cachedVideoData.width * sizeMult) / 2
         local baseOffset = CFrame.new(offX.Value, offY.Value, offZ.Value)
         local targetBaseCF = plotZone.CFrame * baseOffset
 
-        -- Render just the four corners of the screen based on dimensions
-        local function drawCorner(x, y)
-            local marker = Instance.new("Part")
-            marker.Anchored = true
-            marker.CanCollide = false
-            marker.Material = Enum.Material.Neon
-            marker.Color = Color3.new(1, 0, 1) -- Magenta corner markers
-            marker.Size = Vector3.new(sizeMult * 2, sizeMult * 2, sizeMult * 1.5)
-            
-            local relativePos = Vector3.new(
-                (x * sizeMult) - halfWidth,
-                (y * sizeMult) + surfaceY,
-                0
-            )
-            marker.CFrame = targetBaseCF:ToWorldSpace(CFrame.new(relativePos))
-            marker.Parent = previewFolder
+        local firstFrame = cachedVideoData.frames[1]
+        local i = 1
+        
+        -- Render the literal first frame of the video
+        for y = 0, cachedVideoData.height - 1 do
+            for x = 0, cachedVideoData.width - 1 do
+                local colorData = firstFrame[i]
+                if colorData then
+                    local ghost = Instance.new("Part")
+                    ghost.Anchored = true
+                    ghost.CanCollide = false
+                    ghost.Material = Enum.Material.SmoothPlastic
+                    ghost.Transparency = 0.5
+                    ghost.Color = Color3.new(unpack(colorData))
+                    ghost.Size = Vector3.new(sizeMult, sizeMult, sizeMult)
+                    
+                    -- Y goes down visually, so physical height needs to go up (inverted)
+                    local rY = ((cachedVideoData.height - y - 1) * sizeMult) + surfaceY
+                    local rX = (x * sizeMult) - halfWidth
+                    
+                    ghost.CFrame = targetBaseCF:ToWorldSpace(CFrame.new(rX, rY, 0))
+                    ghost.Parent = previewFolder
+                end
+                i = i + 1
+            end
         end
-
-        local w = cachedGifData.width
-        local h = cachedGifData.height
-        drawCorner(0, 0)
-        drawCorner(w - 1, 0)
-        drawCorner(0, h - 1)
-        drawCorner(w - 1, h - 1)
     end
 
     -- =========================================================================
-    -- MAIN MODULE (BUILD CANVAS & ANIMATE)
+    -- MAIN MODULE (BUILD & PLAY)
     -- =========================================================================
-    gifModule = vape.Categories['BABFT Tools']:CreateModule({
-        Name = 'GIF / Video Player',
-        Tooltip = 'Builds a flat screen and rapidly paints frames to play a video.',
+    videoModule = vape.Categories['BABFT Tools']:CreateModule({
+        Name = 'Video & GIF Player',
+        Tooltip = 'Builds a canvas and smoothly plays MP4/GIFs on it.',
         Function = function(callback)
-            if not callback then return end
+            if not callback then 
+                isPlaying = false 
+                return 
+            end
             
             task.spawn(function()
-                if not cachedGifData or not cachedGifData.frames then
-                    notify('Error', 'No GIF processed! Use the Fetch button first.', 5, 'alert')
-                    gifModule:Toggle() return
+                if not cachedVideoData or not cachedVideoData.frames then
+                    notify('Error', 'No video processed! Fetch it first.', 5, 'alert')
+                    videoModule:Toggle() return
                 end
 
                 local char = lp.Character or lp.CharacterAdded:Wait()
@@ -2282,7 +2298,7 @@ run(function()
 
                 if not buildTool or not scaleTool or not paintTool then
                     notify('Error', 'Missing required tools (Build, Scale, Paint).', 5, 'alert')
-                    gifModule:Toggle() return
+                    videoModule:Toggle() return
                 end
 
                 local buildRF = buildTool:WaitForChild("RF")
@@ -2290,6 +2306,7 @@ run(function()
                 local plotZone = getPlotZone()
                 local playerBlocksFolder = workspace:WaitForChild("Blocks"):WaitForChild(lp.Name)
 
+                -- Inventory Logic
                 local fallbacks = {}
                 for match in fallbackBox.Value:gmatch("[^,]+") do table.insert(fallbacks, match:match("^%s*(.-)%s*$")) end
                 local consumedTracker = {}
@@ -2312,9 +2329,10 @@ run(function()
                 end
 
                 pcall(function() workspace:WaitForChild("InstaLoadFunction", 1):InvokeServer() end)
-                
-                local totalBlocks = cachedGifData.width * cachedGifData.height
-                notify('Video Player', 'Building ' .. totalBlocks .. ' pixel canvas...', 5, 'info')
+                if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
+
+                local totalBlocks = cachedVideoData.width * cachedVideoData.height
+                notify('Video Player', 'Building ' .. totalBlocks .. ' block canvas...', 5, 'info')
 
                 local spawnDelayRate = 1 / speedSlider.Value
                 local spawnBatchSize = math.max(1, math.ceil(0.015 / spawnDelayRate))
@@ -2323,26 +2341,26 @@ run(function()
                 local threadsCompleted = 0
                 local sizeMult = partSizeSlider.Value / 10
                 local surfaceY = (plotZone.Size.Y / 2) + (sizeMult / 2)
-                local halfWidth = (cachedGifData.width * sizeMult) / 2
+                local halfWidth = (cachedVideoData.width * sizeMult) / 2
                 local baseOffset = CFrame.new(offX.Value, offY.Value, offZ.Value)
                 
-                local screenBlocks = {} -- Crucial array mapping index -> Physical Part
-                local currentColors = {} -- Cache to prevent re-painting same colors
+                local screenBlocks = {} 
+                local currentColors = {}
 
                 local unprocessedBlocks = {}
                 local blockAddedConn = playerBlocksFolder.ChildAdded:Connect(function(b)
                     if not unprocessedBlocks[b.Name] then unprocessedBlocks[b.Name] = {} end
                     table.insert(unprocessedBlocks[b.Name], b)
                 end)
-                gifModule:Clean(blockAddedConn)
+                videoModule:Clean(blockAddedConn)
 
-                -- 1. BUILD THE BLANK CANVAS
-                local firstFrame = cachedGifData.frames[1]
+                -- 1. BUILD CANVAS
+                local firstFrame = cachedVideoData.frames[1]
                 local i = 1
                 
-                for y = 0, cachedGifData.height - 1 do
-                    for x = 0, cachedGifData.width - 1 do
-                        if not gifModule.Enabled then break end
+                for y = 0, cachedVideoData.height - 1 do
+                    for x = 0, cachedVideoData.width - 1 do
+                        if not videoModule.Enabled then break end
 
                         local currentBlockType = getValidBlock()
                         if not currentBlockType then
@@ -2350,8 +2368,7 @@ run(function()
                             break
                         end
 
-                        -- Image Y goes down, so we subtract from height
-                        local rY = ((cachedGifData.height - y - 1) * sizeMult) + surfaceY
+                        local rY = ((cachedVideoData.height - y - 1) * sizeMult) + surfaceY
                         local rX = (x * sizeMult) - halfWidth
                         local relativePos = Vector3.new(rX, rY, 0)
                         
@@ -2360,7 +2377,7 @@ run(function()
                         local targetSize = Vector3.new(sizeMult, sizeMult, sizeMult)
                         local targetColor = Color3.new(unpack(firstFrame[i]))
 
-                        local current_i = i -- Store index for the thread
+                        local current_i = i 
                         
                         task.spawn(function()
                             local cCount = getCount(currentBlockType)
@@ -2368,7 +2385,7 @@ run(function()
                             
                             local spawnedBlock = nil
                             for attempt = 1, 15 do 
-                                if not gifModule.Enabled then break end
+                                if not videoModule.Enabled then break end
                                 local list = unprocessedBlocks[currentBlockType]
                                 if list and #list > 0 then
                                     for idx, b in ipairs(list) do
@@ -2383,10 +2400,9 @@ run(function()
                                 task.wait() 
                             end
                             
-                            if spawnedBlock and gifModule.Enabled then
+                            if spawnedBlock and videoModule.Enabled then
                                 task.spawn(function() scaleRF:InvokeServer(spawnedBlock, targetSize, absoluteTargetCFrame) end)
                                 
-                                -- Map to Screen Grid for the animation loop
                                 screenBlocks[current_i] = spawnedBlock
                                 currentColors[current_i] = targetColor
                                 task.spawn(function() paintTool:WaitForChild("RF"):InvokeServer({{spawnedBlock, targetColor}}) end)
@@ -2401,26 +2417,26 @@ run(function()
                     end
                 end
 
-                while threadsCompleted < totalBlocks and gifModule.Enabled do task.wait() end
-                if not gifModule.Enabled then return end
+                while threadsCompleted < totalBlocks and videoModule.Enabled do task.wait() end
+                if not videoModule.Enabled then return end
 
-                notify('Video Player', 'Canvas built! Starting animation...', 5, 'info')
+                notify('Video Player', 'Canvas ready! Starting playback...', 5, 'info')
 
-                -- 2. ANIMATION LOOP (Differential Painting)
+                -- 2. ANIMATION LOOP (Chunked to prevent dropping remotes)
                 task.spawn(function()
-                    local isPlaying = true
-                    while gifModule.Enabled and isPlaying do
+                    isPlaying = true
+                    while videoModule.Enabled and isPlaying do
                         
-                        for f_idx = 1, cachedGifData.total_frames do
-                            if not gifModule.Enabled then return end
+                        for f_idx = 1, cachedVideoData.total_frames do
+                            if not videoModule.Enabled or not isPlaying then return end
                             
-                            local frame = cachedGifData.frames[f_idx]
+                            local frame = cachedVideoData.frames[f_idx]
                             local paintArgs = {}
                             
                             for idx, block in pairs(screenBlocks) do
                                 if block and block.Parent then
                                     local targetColor = Color3.new(unpack(frame[idx]))
-                                    -- DIFFERENTIAL OPTIMIZATION: Only send paint request if pixel color changed
+                                    -- Differential logic: only paint if changed
                                     if currentColors[idx] ~= targetColor then
                                         table.insert(paintArgs, {block, targetColor})
                                         currentColors[idx] = targetColor
@@ -2428,8 +2444,18 @@ run(function()
                                 end
                             end
                             
+                            -- CHUNK THE REMOTE FIRES (Prevents game freeze/dropping)
                             if #paintArgs > 0 then
-                                task.spawn(function() paintTool:WaitForChild("RF"):InvokeServer(paintArgs) end)
+                                local chunkSize = 500
+                                for c = 1, #paintArgs, chunkSize do
+                                    local chunk = {}
+                                    for j = c, math.min(c + chunkSize - 1, #paintArgs) do
+                                        table.insert(chunk, paintArgs[j])
+                                    end
+                                    task.spawn(function()
+                                        paintTool:WaitForChild("RF"):InvokeServer(chunk)
+                                    end)
+                                end
                             end
                             
                             task.wait(1 / fpsSlider.Value)
@@ -2437,10 +2463,11 @@ run(function()
                         
                         if not loopToggle.Enabled then isPlaying = false end
                     end
-                    notify('Video Player', 'Playback finished.', 3, 'info')
-                    gifModule:Toggle()
+                    if videoModule.Enabled then
+                        notify('Video Player', 'Playback finished.', 3, 'info')
+                        videoModule:Toggle()
+                    end
                 end)
-
             end)
         end
     })
@@ -2448,17 +2475,20 @@ run(function()
     -- =========================================================================
     -- FETCH / PREVIEW BUTTON
     -- =========================================================================
-    gifModule:CreateButton({
-        Name = 'Preview Bounds & Fetch Video',
+    videoModule:CreateButton({
+        Name = 'Fetch & Preview First Frame',
         Function = function()
             local url = linkBox.Value
             if not url or url == "" then notify('Error', 'Please enter a video/gif link.', 5, 'alert') return end
             
-            notify('Processing', 'Asking Python FastAPI server to process media...', 3, 'info')
+            notify('Processing', 'Asking Python Server to process Video...', 3, 'info')
             
             task.spawn(function()
-                local resLevel = resSlider.Value
-                local fetchUrl = "http://localhost:8000/gif?res=" .. resLevel .. "&url=" .. HttpService:UrlEncode(url)
+                -- Maps the 1-4 Slider to Safe Pixel Widths
+                local qualityMap = { [1] = 40, [2] = 64, [3] = 100, [4] = 160 }
+                local targetWidth = qualityMap[resSlider.Value]
+                
+                local fetchUrl = "http://localhost:8000/video?width=" .. targetWidth .. "&url=" .. HttpService:UrlEncode(url)
                 
                 local suc, response = pcall(function() return game:HttpGet(fetchUrl) end)
                 if not suc then notify('Server Error', 'Could not connect to localhost:8000', 5, 'alert') return end
@@ -2466,23 +2496,19 @@ run(function()
                 local decoded = HttpService:JSONDecode(response)
                 if not decoded.success then notify('Python Error', decoded.error or 'Failed to parse media.', 5, 'alert') return end
 
-                cachedGifData = decoded
-                
-                -- Auto-adjust the Lua FPS slider to match the original GIF
+                cachedVideoData = decoded
                 fpsSlider:SetValue(decoded.fps)
                 
-                notify('Success', 'Video loaded! (' .. decoded.total_frames .. ' frames). Requires ' .. (decoded.width * decoded.height) .. ' blocks.', 10, 'info')
+                notify('Success', 'Video mapped! (' .. decoded.total_frames .. ' frames). Required Blocks: ' .. (decoded.width * decoded.height), 10, 'info')
                 
-                isPreviewing = true
-                LiveUpdatePreview()
+                GeneratePreviewHologram()
             end)
         end
     })
 
-    gifModule:CreateButton({
+    videoModule:CreateButton({
         Name = 'Clear Preview',
         Function = function()
-            isPreviewing = false
             if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
         end
     })
@@ -2490,25 +2516,36 @@ run(function()
     -- =========================================================================
     -- UI COMPONENTS
     -- =========================================================================
-    linkBox = gifModule:CreateTextBox({ Name = 'Video / GIF Link', Default = "", Tooltip = "Direct URL to a .gif or video file."})
+    linkBox = videoModule:CreateTextBox({ Name = 'Video / GIF Link (MP4)', Default = "", Tooltip = "Direct URL to an .mp4, .webm, or .gif file."})
     
-    resSlider = gifModule:CreateSlider({ Name = 'Resolution Downscale (1=Native)', Min = 1, Max = 10, Default = 1, Function = function() end })
-    partSizeSlider = gifModule:CreateSlider({ Name = 'Pixel Scale (x10)', Min = 1, Max = 100, Default = 10, Function = LiveUpdatePreview })
-    fpsSlider = gifModule:CreateSlider({ Name = 'Playback FPS', Min = 1, Max = 60, Default = 15, Function = function() end, Tooltip = "Adjusts playback speed. Automatically sets on fetch." })
+    resSlider = videoModule:CreateSlider({ Name = 'Video Quality Profile (144p -> 480p)', Min = 1, Max = 4, Default = 2, Function = GeneratePreviewHologram, Tooltip = "Higher settings require exponentially more blocks. 4 = 160px wide (Requires 10k+ blocks)." })
+    partSizeSlider = videoModule:CreateSlider({ Name = 'Pixel Scale Multiplier (x10)', Min = 1, Max = 100, Default = 10, Function = GeneratePreviewHologram })
+    fpsSlider = videoModule:CreateSlider({ Name = 'Playback FPS', Min = 1, Max = 60, Default = 15, Function = function() end, Tooltip = "Adjusts playback speed. Overrides during fetch." })
     
-    loopToggle = gifModule:CreateToggle({ Name = 'Loop Playback', Default = true, Function = function() end })
+    loopToggle = videoModule:CreateToggle({ Name = 'Loop Playback', Default = true, Function = function() end })
 
-    blockDropdown = gifModule:CreateDropdown({ Name = 'Canvas Block Type', List = getAvailableBlocks(), Function = function() end})
-    fallbackBox = gifModule:CreateTextBox({ Name = 'Fallback Blocks (Comma Sep)', Default = "PlasticBlock, WoodBlock", Function = function() end })
+    blockDropdown = videoModule:CreateDropdown({ Name = 'Canvas Block Type', List = getAvailableBlocks(), Function = function() end})
+    fallbackBox = videoModule:CreateTextBox({ Name = 'Fallback Blocks (Comma Sep)', Default = "PlasticBlock, WoodBlock", Function = function() end })
     
-    offX = gifModule:CreateSlider({ Name = 'Offset X', Min = -1000, Max = 1000, Default = 0, Function = LiveUpdatePreview })
-    offY = gifModule:CreateSlider({ Name = 'Offset Y', Min = -1000, Max = 1000, Default = 100, Function = LiveUpdatePreview })
-    offZ = gifModule:CreateSlider({ Name = 'Offset Z', Min = -1000, Max = 1000, Default = 0, Function = LiveUpdatePreview })
+    offX = videoModule:CreateSlider({ Name = 'Offset X', Min = -1000, Max = 1000, Default = 0, Function = GeneratePreviewHologram })
+    offY = videoModule:CreateSlider({ Name = 'Offset Y', Min = -1000, Max = 1000, Default = 100, Function = GeneratePreviewHologram })
+    offZ = videoModule:CreateSlider({ Name = 'Offset Z', Min = -1000, Max = 1000, Default = 0, Function = GeneratePreviewHologram })
 
-    speedSlider = gifModule:CreateSlider({ Name = 'Canvas Spawn Speed', Min = 100, Max = 1000, Default = 500, Function = function() end })
-    maxModeToggle = gifModule:CreateToggle({ Name = 'Max Mode (Lag Warning)', Default = false, Function = function() end })
+    speedSlider = videoModule:CreateSlider({ Name = 'Canvas Spawn Speed', Min = 100, Max = 1000, Default = 500, Function = function() end })
+    maxModeToggle = videoModule:CreateToggle({ Name = 'Max Mode (Lag Warning)', Default = false, Function = function() end })
 
 end)
+
+
+
+
+
+
+
+
+
+
+
 
 
 
