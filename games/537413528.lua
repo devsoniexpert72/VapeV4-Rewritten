@@ -1757,6 +1757,7 @@ end)
 
 
 
+
 run(function()
     local vape = shared.vape
     if not vape then return end
@@ -1780,7 +1781,6 @@ run(function()
     local isPreviewing = false
     local imgW, imgH = 0, 0
 
-    -- Track Colors
     local c1 = Color3.new(1, 1, 1)
     local c2 = Color3.new(0.5, 0.5, 0.5)
 
@@ -1800,7 +1800,6 @@ run(function()
         return (d and d:IsA("IntValue")) and d.Value or 0
     end
 
-    -- STRICT BLOCK FILTER: Only objects exactly ending in "Block"
     local function getAvailableBlocks()
         local blocks = {}
         local buildingParts = repStorage:FindFirstChild("BuildingParts")
@@ -1813,9 +1812,6 @@ run(function()
         return blocks
     end
 
-    -- =========================================================================
-    -- GREEDY MESHING & DATA PROCESSING
-    -- =========================================================================
     local function ProcessTextData(rawPixels)
         local isVoxel = voxelToggle.Enabled
         local processed = {}
@@ -1836,7 +1832,6 @@ run(function()
                 table.insert(processed, {x = p.x - centerX, y = p.y - centerY, w = 1})
             end
         else
-            -- GREEDY MESHING: Merge horizontal blocks
             local rows = {}
             for _, p in ipairs(rawPixels) do
                 rows[p.y] = rows[p.y] or {}
@@ -1874,21 +1869,14 @@ run(function()
             local normX = ((p.x + centerX) - minX) / widthRange
             local normY = ((p.y + centerY) - minY) / heightRange
 
-            if colorMode == "Gradient (Left-Right)" then
-                color = c1:Lerp(c2, normX)
-            elseif colorMode == "Gradient (Top-Bottom)" then
-                color = c1:Lerp(c2, 1 - normY)
-            elseif colorMode == "Rainbow (By Part)" then
-                color = Color3.fromHSV((i / #processed) % 1, 1, 1)
-            elseif colorMode == "Rainbow (Left-Right)" then
-                color = Color3.fromHSV(normX % 1, 1, 1)
-            elseif colorMode == "Rainbow (Top-Bottom)" then
-                color = Color3.fromHSV((1 - normY) % 1, 1, 1)
-            end
+            if colorMode == "Gradient (Left-Right)" then color = c1:Lerp(c2, normX)
+            elseif colorMode == "Gradient (Top-Bottom)" then color = c1:Lerp(c2, 1 - normY)
+            elseif colorMode == "Rainbow (By Part)" then color = Color3.fromHSV((i / #processed) % 1, 1, 1)
+            elseif colorMode == "Rainbow (Left-Right)" then color = Color3.fromHSV(normX % 1, 1, 1)
+            elseif colorMode == "Rainbow (Top-Bottom)" then color = Color3.fromHSV((1 - normY) % 1, 1, 1) end
 
             table.insert(finalData, {x = p.x, y = p.y, w = p.w, c = color})
         end
-        
         return finalData
     end
 
@@ -1910,7 +1898,6 @@ run(function()
         local baseOffset = CFrame.new(offX.Value, offY.Value, offZ.Value) * CFrame.Angles(math.rad(rotX.Value), math.rad(rotY.Value), math.rad(rotZ.Value))
         local targetBaseCF = plotZone.CFrame * baseOffset
 
-        -- Render Text Body
         for _, block in ipairs(meshedData) do
             local ghost = Instance.new("Part")
             ghost.Anchored = true
@@ -1926,32 +1913,26 @@ run(function()
             ghost.Parent = previewFolder
         end
 
-        -- Render the 4 Corner Bounding Box Markers
         local function drawMarker(x, y)
             local marker = Instance.new("Part")
             marker.Anchored = true
             marker.CanCollide = false
             marker.Material = Enum.Material.Neon
-            marker.Color = Color3.new(0, 1, 0.5) -- Neon Cyan/Green
+            marker.Color = Color3.new(0, 1, 0.5) 
             marker.Size = Vector3.new(sizeM * 3, sizeM * 3, thickM * 1.5)
-            
             local relativePos = Vector3.new(x * sizeM, (y * sizeM) + surfaceY, thickM/2)
             marker.CFrame = targetBaseCF:ToWorldSpace(CFrame.new(relativePos))
             marker.Parent = previewFolder
         end
 
-        -- Center the markers properly based on the generated image canvas
         local halfW = imgW / 2
         local halfH = imgH / 2
-        drawMarker(-halfW, -halfH) -- Bottom Left
-        drawMarker(halfW, -halfH)  -- Bottom Right
-        drawMarker(-halfW, halfH)  -- Top Left
-        drawMarker(halfW, halfH)   -- Top Right
+        drawMarker(-halfW, -halfH) 
+        drawMarker(halfW, -halfH)  
+        drawMarker(-halfW, halfH)  
+        drawMarker(halfW, halfH)   
     end
 
-    -- =========================================================================
-    -- MAIN BUILD MODULE
-    -- =========================================================================
     textModule = vape.Categories['BABFT Tools']:CreateModule({
         Name = '3D Text Generator',
         Tooltip = 'Generates 3D text natively using optimal block-merging logic.',
@@ -2086,9 +2067,6 @@ run(function()
         end
     })
 
-    -- =========================================================================
-    -- GENERATE / PREVIEW ACTION
-    -- =========================================================================
     textModule:CreateButton({
         Name = 'Fetch & Preview Text',
         Function = function()
@@ -2098,7 +2076,7 @@ run(function()
             notify('Processing', 'Asking Python server to generate text...', 3, 'info')
             
             task.spawn(function()
-                local fontName = fontDropdown.Value .. ".ttf"
+                local fontName = fontDropdown.Value:lower() .. ".ttf"
                 if fontDropdown.Value == "Comic Sans MS" then fontName = "comic.ttf" end
                 
                 local url = "http://localhost:8000/text?text=" .. HttpService:UrlEncode(textStr) .. 
@@ -2122,7 +2100,7 @@ run(function()
                 local optBlocks = #testMeshed
                 local saved = origBlocks - optBlocks
                 
-                notify('Success', 'Optimal Mesh: ' .. optBlocks .. ' blocks ('..saved..' saved!). Corners Drawn.', 8, 'info')
+                notify('Success', 'Optimal Mesh: ' .. optBlocks .. ' blocks ('..saved..' saved!).', 8, 'info')
                 
                 isPreviewing = true
                 LiveUpdatePreview()
@@ -2138,11 +2116,8 @@ run(function()
         end
     })
 
-    -- =========================================================================
-    -- UI COMPONENTS & SETTINGS
-    -- =========================================================================
     textBox = textModule:CreateTextBox({ Name = 'Text to Generate', Default = "BABFT", Function = function() end })
-    fontDropdown = textModule:CreateDropdown({ Name = 'Font Style', List = {'arial', 'impact', 'tahoma', 'verdana', 'Comic Sans MS'}, Function = function() end })
+    fontDropdown = textModule:CreateDropdown({ Name = 'Font Style', List = {'Arial', 'Impact', 'Tahoma', 'Verdana', 'Comic Sans MS'}, Function = function() end })
     
     densitySlider = textModule:CreateSlider({ Name = 'Detail Density (Resolution)', Min = 10, Max = 200, Default = 50, Function = function() end, Tooltip = "Higher density reveals smooth curves but costs more blocks." })
     maxWidthSlider = textModule:CreateSlider({ Name = 'Max Line Width (Pixels)', Min = 0, Max = 2000, Default = 0, Function = function() end, Tooltip = "0 = No wrapping. Greater than 0 forces text to wrap to the next line." })
@@ -2170,8 +2145,6 @@ run(function()
     maxModeToggle = textModule:CreateToggle({ Name = 'Max Mode (Lag Warning)', Default = false, Function = function() end })
 
 end)
-
-
 
 
 
