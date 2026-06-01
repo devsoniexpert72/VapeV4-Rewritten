@@ -1758,6 +1758,9 @@ end)
 
 
 
+
+
+
 run(function()
     local vape = shared.vape
     if not vape then return end
@@ -2068,6 +2071,24 @@ run(function()
     })
 
     textModule:CreateButton({
+        Name = 'Refresh Server Fonts',
+        Function = function()
+            task.spawn(function()
+                local suc, response = pcall(function() return game:HttpGet("http://localhost:8000/fonts") end)
+                if not suc then 
+                    notify('Error', 'Server not running on localhost:8000', 5, 'alert') 
+                    return 
+                end
+                local decoded = HttpService:JSONDecode(response)
+                if decoded.success and #decoded.fonts > 0 then
+                    fontDropdown:Change(decoded.fonts)
+                    notify('Fonts Loaded', 'Successfully linked ' .. #decoded.fonts .. ' custom fonts!', 5, 'info')
+                end
+            end)
+        end
+    })
+
+    textModule:CreateButton({
         Name = 'Fetch & Preview Text',
         Function = function()
             local textStr = textBox.Value
@@ -2076,11 +2097,9 @@ run(function()
             notify('Processing', 'Asking Python server to generate text...', 3, 'info')
             
             task.spawn(function()
-                local fontName = fontDropdown.Value:lower() .. ".ttf"
-                if fontDropdown.Value == "Comic Sans MS" then fontName = "comic.ttf" end
-                
+                -- Now passes the exact filename straight from the dropdown list
                 local url = "http://localhost:8000/text?text=" .. HttpService:UrlEncode(textStr) .. 
-                            "&font=" .. fontName .. 
+                            "&font=" .. HttpService:UrlEncode(fontDropdown.Value) .. 
                             "&density=" .. densitySlider.Value ..
                             "&max_width=" .. maxWidthSlider.Value ..
                             "&line_height=" .. lineHeightSlider.Value
@@ -2100,7 +2119,7 @@ run(function()
                 local optBlocks = #testMeshed
                 local saved = origBlocks - optBlocks
                 
-                notify('Success', 'Optimal Mesh: ' .. optBlocks .. ' blocks ('..saved..' saved!).', 8, 'info')
+                notify('Success', 'Optimal Mesh: ' .. optBlocks .. ' blocks ('..saved..' saved!). Corners Drawn.', 8, 'info')
                 
                 isPreviewing = true
                 LiveUpdatePreview()
@@ -2117,7 +2136,7 @@ run(function()
     })
 
     textBox = textModule:CreateTextBox({ Name = 'Text to Generate', Default = "BABFT", Function = function() end })
-    fontDropdown = textModule:CreateDropdown({ Name = 'Font Style', List = {'Arial', 'Impact', 'Tahoma', 'Verdana', 'Comic Sans MS'}, Function = function() end })
+    fontDropdown = textModule:CreateDropdown({ Name = 'Font Style', List = {'arial.ttf', 'impact.ttf', 'comic.ttf'}, Function = function() end, Tooltip = "Click 'Refresh Server Fonts' to update this list dynamically." })
     
     densitySlider = textModule:CreateSlider({ Name = 'Detail Density (Resolution)', Min = 10, Max = 200, Default = 50, Function = function() end, Tooltip = "Higher density reveals smooth curves but costs more blocks." })
     maxWidthSlider = textModule:CreateSlider({ Name = 'Max Line Width (Pixels)', Min = 0, Max = 2000, Default = 0, Function = function() end, Tooltip = "0 = No wrapping. Greater than 0 forces text to wrap to the next line." })
@@ -2145,6 +2164,7 @@ run(function()
     maxModeToggle = textModule:CreateToggle({ Name = 'Max Mode (Lag Warning)', Default = false, Function = function() end })
 
 end)
+
 
 
 
