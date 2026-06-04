@@ -2590,7 +2590,6 @@ end)
 
 
 
-
 run(function()
     local vape = shared.vape
     if not vape then return end
@@ -2901,7 +2900,7 @@ run(function()
     -- CANNON BLAST
     local cannonBlastModule
     local cannonTargetDropdown
-    local cannonTiltSlider
+    local cannonRotXSlider, cannonRotYSlider, cannonRotZSlider
     
     cannonBlastModule = vape.Categories['Trolling']:CreateModule({
         Name = 'Cannon Blast',
@@ -2982,16 +2981,17 @@ run(function()
                         return
                     end
 
-                    local tilt = cannonTiltSlider.Value
+                    local cRotX = cannonRotXSlider.Value
+                    local cRotY = cannonRotYSlider.Value
+                    local cRotZ = cannonRotZSlider.Value
                     
                     for i, cannon in ipairs(cannons) do
                         local angle = (i / #cannons) * math.pi * 2
                         local offset = Vector3.new(math.cos(angle) * 5, 0, math.sin(angle) * 5)
                         local destPos = tPos + offset
                         
-                        -- CFrame.new(pos, lookAt) mathematically aims it perfectly. 
-                        -- Angles(pitch, 0, 0) applies the downward tilt slider exactly on the local axis.
-                        local aimCF = CFrame.new(destPos, tPos) * CFrame.Angles(math.rad(tilt), 0, 0)
+                        -- CFrame.new(pos, lookAt) aims it. Angles(X, Y, Z) applies independent axis corrections.
+                        local aimCF = CFrame.new(destPos, tPos) * CFrame.Angles(math.rad(cRotX), math.rad(cRotY), math.rad(cRotZ))
                         
                         if cannon:IsA("Model") then
                             cannon:PivotTo(aimCF)
@@ -3008,7 +3008,10 @@ run(function()
 
     cannonTargetDropdown = cannonBlastModule:CreateDropdown({ Name = 'Target Player', List = getPlayerNames(false), Function = function() end })
     cannonBlastModule:CreateButton({ Name = 'Refresh Players', Function = function() cannonTargetDropdown:Change(getPlayerNames(false)); notify("Refreshed", "Player list updated.", 3, "info") end })
-    cannonTiltSlider = cannonBlastModule:CreateSlider({ Name = 'Cannon Tilt (Pitch)', Min = -90, Max = 90, Default = -15, Function = function() end, Tooltip = 'Negative values tilt the cannon downwards.' })
+    
+    cannonRotXSlider = cannonBlastModule:CreateSlider({ Name = 'Cannon Rotation X', Min = -180, Max = 180, Default = -15, Function = function() end })
+    cannonRotYSlider = cannonBlastModule:CreateSlider({ Name = 'Cannon Rotation Y', Min = -180, Max = 180, Default = 0, Function = function() end })
+    cannonRotZSlider = cannonBlastModule:CreateSlider({ Name = 'Cannon Rotation Z', Min = -180, Max = 180, Default = 0, Function = function() end })
 
 
     -- =========================================================================
@@ -3551,7 +3554,6 @@ run(function()
     usePropToggle = autoBuilderModule:CreateToggle({ Name = 'Use Property Tool', Default = true, Function = function() end })
 
 end)
-
 
 
 
