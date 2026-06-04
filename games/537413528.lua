@@ -2584,6 +2584,204 @@ end)
 
 
 
+--TROLLING BE CAREFUL!!!
+
+
+
+
+
+
+
+
+run(function()
+    local vape = shared.vape
+    if not vape then return end
+
+    -- 1. Create the Trolling Category
+    local trollingCategory = vape:CreateCategory({
+        Name = 'Trolling',
+        Icon = 'rbxassetid://0', -- Replace with your desired icon
+        Size = UDim2.fromOffset(16, 16)
+    })
+
+    -- UI Component Variables
+    local feBringModule
+    local targetDropdown
+    local refreshButton
+    local lp = game:GetService("Players").LocalPlayer
+
+    -- Utility: Notification
+    local function notify(title, text, duration, typeTheme)
+        if vape and vape.CreateNotification then
+            vape:CreateNotification(title, text, duration or 5, typeTheme or 'info')
+        end
+    end
+
+    -- Utility: Fetch Players for Dropdown
+    local function getPlayerNames()
+        local names = {}
+        for _, p in ipairs(game:GetService("Players"):GetPlayers()) do
+            if p ~= lp then table.insert(names, p.Name) end
+        end
+        if #names == 0 then table.insert(names, "None") end
+        return names
+    end
+
+    -- =========================================================================
+    -- FE BRING PLAYER MODULE
+    -- =========================================================================
+
+    feBringModule = vape.Categories['Trolling']:CreateModule({
+        Name = 'FE Bring Player',
+        Tooltip = 'Requires exactly 2 seats. Throws the furthest seat at the target and brings them to you.',
+        Function = function(callback)
+            if not callback then return end
+            
+            task.spawn(function()
+                local targetName = targetDropdown.Value
+                local targetPlayer = game:GetService("Players"):FindFirstChild(targetName)
+                
+                if not targetPlayer then
+                    notify("FE Bring", "Target player not found!", 5, "alert")
+                    feBringModule:Toggle()
+                    return
+                end
+                
+                local playerBlocksFolder = workspace:FindFirstChild("Blocks") and workspace.Blocks:FindFirstChild(lp.Name)
+                if not playerBlocksFolder then
+                    notify("FE Bring", "Your blocks folder was not found in the workspace!", 5, "alert")
+                    feBringModule:Toggle()
+                    return
+                end
+                
+                -- Collect all seats belonging to the local player
+                local seats = {}
+                for _, v in ipairs(playerBlocksFolder:GetDescendants()) do
+                    if v:IsA("Seat") or v:IsA("VehicleSeat") then
+                        table.insert(seats, v)
+                    end
+                end
+                
+                -- Verify exactly 2 seats exist
+                if #seats ~= 2 then
+                    notify("FE Bring", "Exactly 2 seats required! Found " .. #seats, 5, "alert")
+                    feBringModule:Toggle()
+                    return
+                end
+                
+                local char = lp.Character
+                local root = char and char:FindFirstChild("HumanoidRootPart")
+                if not root then
+                    notify("FE Bring", "Your character is missing!", 5, "alert")
+                    feBringModule:Toggle()
+                    return
+                end
+                
+                -- Identify the furthest seat from the local player
+                local furthestSeat = seats[1]
+                local maxDist = (seats[1].Position - root.Position).Magnitude
+                if (seats[2].Position - root.Position).Magnitude > maxDist then
+                    furthestSeat = seats[2]
+                end
+                
+                notify("FE Bring", "Sending seat to capture " .. targetName .. "...", 5, "info")
+                
+                -- Unanchor the seat so body movers can affect it
+                furthestSeat.Anchored = false
+                
+                -- Clean old body movers from the selected seat to prevent physics fighting
+                for _, c in ipairs(furthestSeat:GetChildren()) do
+                    if c:IsA("BodyPosition") or c:IsA("BodyGyro") then
+                        c:Destroy()
+                    end
+                end
+                
+                -- Apply huge BodyPosition and BodyGyro
+                local bp = Instance.new("BodyPosition")
+                bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+                bp.P = 15000 -- High responsiveness
+                bp.D = 500
+                bp.Parent = furthestSeat
+                
+                local bg = Instance.new("BodyGyro")
+                bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+                bg.P = 5000
+                bg.Parent = furthestSeat
+                
+                -- Hook to Vape's Maid-style cleaner so they delete when module is toggled off
+                feBringModule:Clean(bp)
+                feBringModule:Clean(bg)
+                
+                local bringConnection
+                local occupantConnection
+                local caught = false
+                
+                -- Listen for when the target sits in the seat
+                occupantConnection = furthestSeat:GetPropertyChangedSignal("Occupant"):Connect(function()
+                    if furthestSeat.Occupant and furthestSeat.Occupant.Parent == targetPlayer.Character then
+                        caught = true
+                        notify("FE Bring", "Caught " .. targetName .. "! Bringing them to you...", 5, "info")
+                        
+                        -- Set destination to exactly 10 studs in front of the local player
+                        local destCF = root.CFrame * CFrame.new(0, 0, -10)
+                        
+                        -- Immediately update movers to pull the seat back
+                        bp.Position = destCF.Position
+                        bg.CFrame = destCF
+                        
+                        -- Forcefully snap the CFrame to bypass travel time and potential network ownership delays
+                        furthestSeat.CFrame = destCF
+                        
+                        -- Give it a brief moment to register on the server, then shut down the module
+                        task.delay(1.5, function()
+                            if feBringModule.Enabled then
+                                feBringModule:Toggle()
+                            end
+                        end)
+                    end
+                end)
+                feBringModule:Clean(occupantConnection)
+                
+                -- Update loop to constantly force the seat to the target player's position
+                bringConnection = game:GetService("RunService").Heartbeat:Connect(function()
+                    if caught then return end -- Stop tracking them once they are captured
+                    
+                    if not targetPlayer.Character or not targetPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
+                    
+                    local targetRoot = targetPlayer.Character.HumanoidRootPart
+                    bp.Position = targetRoot.Position
+                    bg.CFrame = targetRoot.CFrame
+                end)
+                feBringModule:Clean(bringConnection)
+            end)
+        end
+    })
+
+    -- Component Attachments
+    targetDropdown = feBringModule:CreateDropdown({
+        Name = 'Target Player',
+        List = getPlayerNames(),
+        Function = function(val) end,
+        Tooltip = 'Select the victim to capture.'
+    })
+
+    refreshButton = feBringModule:CreateButton({
+        Name = 'Refresh Players',
+        Function = function()
+            targetDropdown:Change(getPlayerNames())
+            notify("Refreshed", "Player list updated successfully.", 3, "info")
+        end
+    })
+end)
+
+
+
+
+
+
+
+
+
 
 
 
