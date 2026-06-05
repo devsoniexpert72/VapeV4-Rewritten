@@ -3104,10 +3104,6 @@ end)
 
 
 
-
-
-
-
 run(function()
     local vape = shared.vape
     if not vape then return end
@@ -3126,6 +3122,17 @@ run(function()
         end
         if #blocks == 0 then table.insert(blocks, "PlasticBlock") end
         return blocks
+    end
+
+    local function getBlockAppearance(blockName)
+        local parts = repStorage:FindFirstChild("BuildingParts")
+        if parts then
+            local block = parts:FindFirstChild(blockName)
+            if block and block:IsA("BasePart") then
+                return block.Color, block.Material
+            end
+        end
+        return Color3.fromRGB(163, 162, 165), Enum.Material.Plastic -- Fallback
     end
 
     local terrainModule
@@ -3164,7 +3171,7 @@ run(function()
     -- PROCEDURAL MATH ENGINE (FBM PERLIN NOISE)
     -- =========================================================================
     local function getNoiseHeight(x, z)
-        local scale = scaleSlider.Value -- Frequency divider
+        local scale = scaleSlider.Value 
         local octaves = octavesSlider.Value
         local persistence = persistenceSlider.Value / 100
         local lacunarity = 2.0
@@ -3176,12 +3183,10 @@ run(function()
         local amplitude = 1
         local maxValue = 0
 
-        -- Shift inputs to allow infinite scrolling via offsets
         local nx = x + offXSlider.Value
         local nz = z + offZSlider.Value
 
         for i = 1, octaves do
-            -- math.noise returns roughly -0.5 to 0.5. Add 0.5 to normalize to 0-1
             local noiseVal = math.noise(nx * frequency, nz * frequency, 1337) + 0.5
             total = total + (noiseVal * amplitude)
             maxValue = maxValue + amplitude
@@ -3190,15 +3195,12 @@ run(function()
         end
 
         local normalizedHeight = total / maxValue
-        
-        -- Apply the curve (Exponent) to flatten valleys and sharpen peaks
         normalizedHeight = math.pow(normalizedHeight, exponent)
 
         return normalizedHeight * heightMultiplier
     end
 
     local function calculateSurfaceNormal(x, z, step)
-        -- Sample surrounding points to calculate the slope vector
         local hL = getNoiseHeight(x - step, z)
         local hR = getNoiseHeight(x + step, z)
         local hD = getNoiseHeight(x, z - step)
@@ -3211,59 +3213,99 @@ run(function()
     end
 
     -- =========================================================================
-    -- PREVIEW GENERATION
+    -- GREEDY MESHING ALGORITHM (OPTIMIZATION)
     -- =========================================================================
-    local function generateTerrainData()
+    local function generateMeshedTerrainData()
         cachedTerrainData = {}
         local sizeMult = sizeSlider.Value / 10
         local isVoxel = voxelToggle.Enabled
-        
         local gridX = gridXSlider.Value
         local gridZ = gridZSlider.Value
-
         local halfW = (gridX * sizeMult) / 2
         local halfD = (gridZ * sizeMult) / 2
 
+        -- Step 1: Generate Raw Grid
+        local rawGrid = {}
         for x = 1, gridX do
+            rawGrid[x] = {}
             for z = 1, gridZ do
-                -- World coordinates for noise sampling
                 local worldX = x * sizeMult
                 local worldZ = z * sizeMult
-                
                 local rawHeight = getNoiseHeight(worldX, worldZ)
-                local finalY = rawHeight
 
-                local right, up, look
-                
+                local finalY, right, up, look
+
                 if isVoxel then
-                    -- Minecraft Mode: Snap to grid, no rotation
                     finalY = math.floor(rawHeight / sizeMult) * sizeMult
                     up = Vector3.new(0, 1, 0)
                     right = Vector3.new(1, 0, 0)
                     look = Vector3.new(0, 0, -1)
                 else
-                    -- Smooth Mode: Angled to surface normal
                     up = calculateSurfaceNormal(worldX, worldZ, sizeMult)
                     right = Vector3.new(1, 0, 0):Cross(up).Unit
                     look = up:Cross(right).Unit
+                    finalY = rawHeight
                 end
 
-                -- Relative position from center of grid
-                local relX = worldX - halfW
-                local relZ = worldZ - halfD
+                rawGrid[x][z] = { y = finalY, r = right, u = up, l = look, meshed = false }
+            end
+        end
 
-                table.insert(cachedTerrainData, {
-                    pos = Vector3.new(relX, finalY, relZ),
-                    r = right,
-                    u = up,
-                    b = -look 
-                })
+        -- Step 2: Mesh identical adjacent blocks
+        local function areBlocksEqual(b1, b2)
+            local epsilon = 0.001
+            return math.abs(b1.y - b2.y) < epsilon and (b1.u - b2.u).Magnitude < epsilon
+        end
+
+        for x = 1, gridX do
+            for z = 1, gridZ do
+                if not rawGrid[x][z].meshed then
+                    local startBlock = rawGrid[x][z]
+                    local w, d = 1, 1
+
+                    -- Expand X Width
+                    while x + w <= gridX and not rawGrid[x + w][z].meshed and areBlocksEqual(startBlock, rawGrid[x + w][z]) do
+                        w = w + 1
+                    end
+
+                    -- Expand Z Depth
+                    local canExpandZ = true
+                    while z + d <= gridZ and canExpandZ do
+                        for testX = 0, w - 1 do
+                            if rawGrid[x + testX][z + d].meshed or not areBlocksEqual(startBlock, rawGrid[x + testX][z + d]) then
+                                canExpandZ = false
+                                break
+                            end
+                        end
+                        if canExpandZ then d = d + 1 end
+                    end
+
+                    -- Mark region as meshed
+                    for ix = 0, w - 1 do
+                        for iz = 0, d - 1 do
+                            rawGrid[x + ix][z + iz].meshed = true
+                        end
+                    end
+
+                    -- Calculate center of merged block
+                    local centerX = (x + (w - 1) / 2) * sizeMult - halfW
+                    local centerZ = (z + (d - 1) / 2) * sizeMult - halfD
+
+                    table.insert(cachedTerrainData, {
+                        pos = Vector3.new(centerX, startBlock.y, centerZ),
+                        size = Vector3.new(w * sizeMult, sizeMult, d * sizeMult),
+                        r = startBlock.r, u = startBlock.u, b = -startBlock.l
+                    })
+                end
             end
         end
     end
 
+    -- =========================================================================
+    -- REALISTIC PREVIEW GENERATION
+    -- =========================================================================
     local function renderPreview()
-        generateTerrainData()
+        generateMeshedTerrainData()
         if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
         
         local previewFolder = Instance.new("Folder")
@@ -3276,23 +3318,26 @@ run(function()
         local sizeMult = sizeSlider.Value / 10
         local surfaceY = (plotZone.Size.Y / 2) + (sizeMult / 2)
         local baseCF = plotZone.CFrame * CFrame.new(0, surfaceY, 0)
+        
+        -- Get actual visual data for hologram
+        local previewColor, previewMaterial = getBlockAppearance(blockDropdown.Value)
 
         for _, blockData in ipairs(cachedTerrainData) do
             local ghost = Instance.new("Part")
             ghost.Anchored = true
             ghost.CanCollide = false
-            ghost.Transparency = 0.5
-            ghost.Color = Color3.fromRGB(85, 170, 127) -- Grassy green
-            ghost.Material = Enum.Material.Neon
-            ghost.Size = Vector3.new(sizeMult, sizeMult, sizeMult)
+            ghost.Transparency = 0.4
+            ghost.Color = previewColor
+            ghost.Material = previewMaterial
+            ghost.Size = blockData.size
             
-            -- Construct the CFrame from the normal matrix
             local localRotCF = CFrame.fromMatrix(blockData.pos, blockData.r, blockData.u, blockData.b)
             ghost.CFrame = baseCF:ToWorldSpace(localRotCF)
             ghost.Parent = previewFolder
         end
         
-        notify('Terrain Generated', 'Previewing ' .. #cachedTerrainData .. ' blocks.', 3, 'info')
+        local totalRaw = gridXSlider.Value * gridZSlider.Value
+        notify('Terrain Generated', 'Meshing reduced ' .. totalRaw .. ' parts to ' .. #cachedTerrainData .. ' parts.', 5, 'info')
     end
 
     -- =========================================================================
@@ -3300,7 +3345,7 @@ run(function()
     -- =========================================================================
     terrainModule = vape.Categories['BABFT Tools']:CreateModule({
         Name = 'TerrainGen',
-        Tooltip = 'Procedurally generates 3D terrain using advanced FBM noise.',
+        Tooltip = 'Procedurally generates optimized 3D terrain using greedy meshing.',
         Function = function(callback)
             if not callback then return end
             
@@ -3353,7 +3398,7 @@ run(function()
                 end
 
                 pcall(function() workspace:WaitForChild("InstaLoadFunction", 1):InvokeServer() end)
-                notify('TerrainGen', 'Building terrain... (' .. totalNeeded .. ' blocks)', 5, 'info')
+                notify('TerrainGen', 'Building optimized terrain... (' .. totalNeeded .. ' parts)', 5, 'info')
 
                 local spawnDelayRate = 1 / speedSlider.Value
                 local spawnBatchSize = math.max(1, math.ceil(0.015 / spawnDelayRate))
@@ -3363,7 +3408,6 @@ run(function()
                 local sizeMult = sizeSlider.Value / 10
                 local surfaceY = (plotZone.Size.Y / 2) + (sizeMult / 2)
                 local baseCF = plotZone.CFrame * CFrame.new(0, surfaceY, 0)
-                local targetSize = Vector3.new(sizeMult, sizeMult, sizeMult)
 
                 local unprocessedBlocks = {}
                 local blockAddedConn = playerBlocksFolder.ChildAdded:Connect(function(b)
@@ -3406,7 +3450,8 @@ run(function()
                         end
                         
                         if spawnedBlock and terrainModule.Enabled then
-                            task.spawn(function() scaleRF:InvokeServer(spawnedBlock, targetSize, absoluteTargetCFrame) end)
+                            -- Pass the highly optimized dynamic size instead of a flat cube
+                            task.spawn(function() scaleRF:InvokeServer(spawnedBlock, blockData.size, absoluteTargetCFrame) end)
                         end
                         threadsCompleted = threadsCompleted + 1
                     end)
@@ -3437,26 +3482,21 @@ run(function()
         end
     })
 
-    -- Size parameters
     gridXSlider = terrainModule:CreateSlider({ Name = 'Grid X (Width)', Min = 10, Max = 100, Default = 30, Function = function() end })
     gridZSlider = terrainModule:CreateSlider({ Name = 'Grid Z (Depth)', Min = 10, Max = 100, Default = 30, Function = function() end })
-    sizeSlider = terrainModule:CreateSlider({ Name = 'Block Size (x10)', Min = 1, Max = 100, Default = 20, Tooltip = "20 = 2x2x2 stud blocks" })
+    sizeSlider = terrainModule:CreateSlider({ Name = 'Base Scale Limit (x10)', Min = 1, Max = 100, Default = 20, Tooltip = "Thickness/Base size of individual sections." })
 
-    -- Noise shaping parameters
     heightSlider = terrainModule:CreateSlider({ Name = 'Mountain Height Max', Min = 1, Max = 300, Default = 50, Function = function() end })
-    scaleSlider = terrainModule:CreateSlider({ Name = 'Terrain Smoothness (Stretch)', Min = 10, Max = 500, Default = 150, Tooltip = "Higher = smoother, rolling hills." })
-    curveSlider = terrainModule:CreateSlider({ Name = 'Valley Exponent (x10)', Min = 1, Max = 50, Default = 15, Tooltip = "15 = 1.5. Flattens valleys and sharpens peaks." })
+    scaleSlider = terrainModule:CreateSlider({ Name = 'Terrain Smoothness', Min = 10, Max = 500, Default = 150 })
+    curveSlider = terrainModule:CreateSlider({ Name = 'Valley Exponent (x10)', Min = 1, Max = 50, Default = 15 })
     
-    -- Fractal parameters
-    octavesSlider = terrainModule:CreateSlider({ Name = 'Octaves (Detail Layers)', Min = 1, Max = 6, Default = 2, Tooltip = "More layers = bumpier, rockier terrain." })
-    persistenceSlider = terrainModule:CreateSlider({ Name = 'Persistence (Roughness %)', Min = 1, Max = 100, Default = 40, Tooltip = "How much detail the octaves add." })
+    octavesSlider = terrainModule:CreateSlider({ Name = 'Octaves (Detail Layers)', Min = 1, Max = 6, Default = 2 })
+    persistenceSlider = terrainModule:CreateSlider({ Name = 'Persistence (Roughness %)', Min = 1, Max = 100, Default = 40 })
 
-    -- Seed / Offsets
     offXSlider = terrainModule:CreateSlider({ Name = 'Seed Offset X', Min = -10000, Max = 10000, Default = 0, Function = function() end })
     offZSlider = terrainModule:CreateSlider({ Name = 'Seed Offset Z', Min = -10000, Max = 10000, Default = 0, Function = function() end })
 
-    -- Toggles and Data
-    voxelToggle = terrainModule:CreateToggle({ Name = 'Voxel Mode (Minecraft Style)', Default = false, Tooltip = "Snaps blocks to grid. Uncheck for slanted smooth terrain." })
+    voxelToggle = terrainModule:CreateToggle({ Name = 'Voxel Mode (High Optimization)', Default = true, Tooltip = "Voxel grids mesh perfectly, drastically saving parts." })
     blockDropdown = terrainModule:CreateDropdown({ Name = 'Base Block', List = getAvailableBlocks(), Function = function() end})
     fallbackBox = terrainModule:CreateTextBox({ Name = 'Fallbacks', Default = "PlasticBlock, WoodBlock" })
     
@@ -3464,18 +3504,6 @@ run(function()
     maxModeToggle = terrainModule:CreateToggle({ Name = 'Max Mode', Default = false })
 
 end)
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
