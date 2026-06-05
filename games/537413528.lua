@@ -3087,6 +3087,404 @@ run(function()
 end)
 
 
+--TERRAIN BUILDER !!!!!!!!!!
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+run(function()
+    local vape = shared.vape
+    if not vape then return end
+
+    local repStorage = game:GetService("ReplicatedStorage")
+    local lp = game:GetService("Players").LocalPlayer
+
+    -- Fetch available blocks natively
+    local function getAvailableBlocks()
+        local blocks = {}
+        local buildingParts = repStorage:FindFirstChild("BuildingParts")
+        if buildingParts then
+            for _, v in ipairs(buildingParts:GetChildren()) do
+                if string.find(v.Name, "Block") then table.insert(blocks, v.Name) end
+            end
+        end
+        if #blocks == 0 then table.insert(blocks, "PlasticBlock") end
+        return blocks
+    end
+
+    local terrainModule
+    local gridXSlider, gridZSlider, sizeSlider, heightSlider, scaleSlider
+    local octavesSlider, persistenceSlider, curveSlider
+    local offXSlider, offZSlider, voxelToggle, maxModeToggle
+    local blockDropdown, fallbackBox, speedSlider
+    
+    local previewFolderName = "Terrain_Preview_Hologram"
+    local cachedTerrainData = {}
+
+    local function notify(title, text, duration, typeTheme)
+        if vape.CreateNotification then vape:CreateNotification(title, text, duration or 5, typeTheme or 'info') end
+    end
+
+    local function getPlotZone()
+        local t = tostring(lp.Team)
+        local p = "WhiteZone"
+        if t=="red" then p="Really redZone" elseif t=="blue" then p="Really blueZone" elseif t=="black" then p="BlackZone" elseif t=="yellow" then p="New YellerZone" elseif t=="magenta" then p="MagentaZone" elseif t=="green" then p="CamoZone" end
+        return workspace:FindFirstChild(p)
+    end
+
+    local function parseRedundancy(text)
+        local list = {}
+        if not text or text == "" then return list end
+        for match in text:gmatch("[^,]+") do table.insert(list, match:match("^%s*(.-)%s*$")) end
+        return list
+    end
+
+    local function getCount(name)
+        local d = lp:WaitForChild("Data"):FindFirstChild(name)
+        return (d and d:IsA("IntValue")) and d.Value or 0
+    end
+
+    -- =========================================================================
+    -- PROCEDURAL MATH ENGINE (FBM PERLIN NOISE)
+    -- =========================================================================
+    local function getNoiseHeight(x, z)
+        local scale = scaleSlider.Value -- Frequency divider
+        local octaves = octavesSlider.Value
+        local persistence = persistenceSlider.Value / 100
+        local lacunarity = 2.0
+        local exponent = curveSlider.Value / 10
+        local heightMultiplier = heightSlider.Value
+
+        local total = 0
+        local frequency = 1 / scale
+        local amplitude = 1
+        local maxValue = 0
+
+        -- Shift inputs to allow infinite scrolling via offsets
+        local nx = x + offXSlider.Value
+        local nz = z + offZSlider.Value
+
+        for i = 1, octaves do
+            -- math.noise returns roughly -0.5 to 0.5. Add 0.5 to normalize to 0-1
+            local noiseVal = math.noise(nx * frequency, nz * frequency, 1337) + 0.5
+            total = total + (noiseVal * amplitude)
+            maxValue = maxValue + amplitude
+            amplitude = amplitude * persistence
+            frequency = frequency * lacunarity
+        end
+
+        local normalizedHeight = total / maxValue
+        
+        -- Apply the curve (Exponent) to flatten valleys and sharpen peaks
+        normalizedHeight = math.pow(normalizedHeight, exponent)
+
+        return normalizedHeight * heightMultiplier
+    end
+
+    local function calculateSurfaceNormal(x, z, step)
+        -- Sample surrounding points to calculate the slope vector
+        local hL = getNoiseHeight(x - step, z)
+        local hR = getNoiseHeight(x + step, z)
+        local hD = getNoiseHeight(x, z - step)
+        local hU = getNoiseHeight(x, z + step)
+
+        local dX = Vector3.new(step * 2, hR - hL, 0)
+        local dZ = Vector3.new(0, hU - hD, step * 2)
+
+        return dZ:Cross(dX).Unit
+    end
+
+    -- =========================================================================
+    -- PREVIEW GENERATION
+    -- =========================================================================
+    local function generateTerrainData()
+        cachedTerrainData = {}
+        local sizeMult = sizeSlider.Value / 10
+        local isVoxel = voxelToggle.Enabled
+        
+        local gridX = gridXSlider.Value
+        local gridZ = gridZSlider.Value
+
+        local halfW = (gridX * sizeMult) / 2
+        local halfD = (gridZ * sizeMult) / 2
+
+        for x = 1, gridX do
+            for z = 1, gridZ do
+                -- World coordinates for noise sampling
+                local worldX = x * sizeMult
+                local worldZ = z * sizeMult
+                
+                local rawHeight = getNoiseHeight(worldX, worldZ)
+                local finalY = rawHeight
+
+                local right, up, look
+                
+                if isVoxel then
+                    -- Minecraft Mode: Snap to grid, no rotation
+                    finalY = math.floor(rawHeight / sizeMult) * sizeMult
+                    up = Vector3.new(0, 1, 0)
+                    right = Vector3.new(1, 0, 0)
+                    look = Vector3.new(0, 0, -1)
+                else
+                    -- Smooth Mode: Angled to surface normal
+                    up = calculateSurfaceNormal(worldX, worldZ, sizeMult)
+                    right = Vector3.new(1, 0, 0):Cross(up).Unit
+                    look = up:Cross(right).Unit
+                end
+
+                -- Relative position from center of grid
+                local relX = worldX - halfW
+                local relZ = worldZ - halfD
+
+                table.insert(cachedTerrainData, {
+                    pos = Vector3.new(relX, finalY, relZ),
+                    r = right,
+                    u = up,
+                    b = -look 
+                })
+            end
+        end
+    end
+
+    local function renderPreview()
+        generateTerrainData()
+        if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
+        
+        local previewFolder = Instance.new("Folder")
+        previewFolder.Name = previewFolderName
+        previewFolder.Parent = workspace
+
+        local plotZone = getPlotZone()
+        if not plotZone then return end
+        
+        local sizeMult = sizeSlider.Value / 10
+        local surfaceY = (plotZone.Size.Y / 2) + (sizeMult / 2)
+        local baseCF = plotZone.CFrame * CFrame.new(0, surfaceY, 0)
+
+        for _, blockData in ipairs(cachedTerrainData) do
+            local ghost = Instance.new("Part")
+            ghost.Anchored = true
+            ghost.CanCollide = false
+            ghost.Transparency = 0.5
+            ghost.Color = Color3.fromRGB(85, 170, 127) -- Grassy green
+            ghost.Material = Enum.Material.Neon
+            ghost.Size = Vector3.new(sizeMult, sizeMult, sizeMult)
+            
+            -- Construct the CFrame from the normal matrix
+            local localRotCF = CFrame.fromMatrix(blockData.pos, blockData.r, blockData.u, blockData.b)
+            ghost.CFrame = baseCF:ToWorldSpace(localRotCF)
+            ghost.Parent = previewFolder
+        end
+        
+        notify('Terrain Generated', 'Previewing ' .. #cachedTerrainData .. ' blocks.', 3, 'info')
+    end
+
+    -- =========================================================================
+    -- MAIN BUILDER MODULE
+    -- =========================================================================
+    terrainModule = vape.Categories['BABFT Tools']:CreateModule({
+        Name = 'TerrainGen',
+        Tooltip = 'Procedurally generates 3D terrain using advanced FBM noise.',
+        Function = function(callback)
+            if not callback then return end
+            
+            task.spawn(function()
+                if #cachedTerrainData == 0 then
+                    notify('Error', 'Generate a preview first!', 5, 'alert')
+                    terrainModule:Toggle()
+                    return
+                end
+
+                local char = lp.Character or lp.CharacterAdded:Wait()
+                local function getTool(toolName)
+                    local tool = char:FindFirstChild(toolName) or lp.Backpack:FindFirstChild(toolName)
+                    if tool and tool.Parent ~= char then tool.Parent = char end
+                    return tool
+                end
+
+                local buildTool = getTool("BuildingTool")
+                local scaleTool = getTool("ScalingTool")
+
+                if not buildTool or not scaleTool then
+                    notify('Error', 'Missing required tools (Build, Scale).', 5, 'alert')
+                    terrainModule:Toggle() return
+                end
+
+                local buildRF = buildTool:WaitForChild("RF")
+                local scaleRF = scaleTool:WaitForChild("RF")
+                local plotZone = getPlotZone()
+                local playerBlocksFolder = workspace:WaitForChild("Blocks"):WaitForChild(lp.Name)
+
+                local fallbacks = parseRedundancy(fallbackBox.Value)
+                local consumedTracker = {}
+                local totalNeeded = #cachedTerrainData
+                local baseBlock = blockDropdown.Value
+
+                local function getValidBlock()
+                    local amtUsed = consumedTracker[baseBlock] or 0
+                    if getCount(baseBlock) > amtUsed then 
+                        consumedTracker[baseBlock] = amtUsed + 1
+                        return baseBlock 
+                    end
+                    for _, fb in ipairs(fallbacks) do
+                        local fbUsed = consumedTracker[fb] or 0
+                        if getCount(fb) > fbUsed then 
+                            consumedTracker[fb] = fbUsed + 1
+                            return fb 
+                        end
+                    end
+                    return nil
+                end
+
+                pcall(function() workspace:WaitForChild("InstaLoadFunction", 1):InvokeServer() end)
+                notify('TerrainGen', 'Building terrain... (' .. totalNeeded .. ' blocks)', 5, 'info')
+
+                local spawnDelayRate = 1 / speedSlider.Value
+                local spawnBatchSize = math.max(1, math.ceil(0.015 / spawnDelayRate))
+                if maxModeToggle.Enabled then spawnDelayRate = 0; spawnBatchSize = 999999 end
+
+                local threadsCompleted = 0
+                local sizeMult = sizeSlider.Value / 10
+                local surfaceY = (plotZone.Size.Y / 2) + (sizeMult / 2)
+                local baseCF = plotZone.CFrame * CFrame.new(0, surfaceY, 0)
+                local targetSize = Vector3.new(sizeMult, sizeMult, sizeMult)
+
+                local unprocessedBlocks = {}
+                local blockAddedConn = playerBlocksFolder.ChildAdded:Connect(function(b)
+                    if not unprocessedBlocks[b.Name] then unprocessedBlocks[b.Name] = {} end
+                    table.insert(unprocessedBlocks[b.Name], b)
+                end)
+                terrainModule:Clean(blockAddedConn)
+
+                for i, blockData in ipairs(cachedTerrainData) do
+                    if not terrainModule.Enabled then break end
+
+                    local currentBlockType = getValidBlock()
+                    if not currentBlockType then
+                        notify('Error', 'Out of blocks! Built ' .. (i-1) .. '/' .. totalNeeded, 10, 'alert')
+                        break
+                    end
+
+                    local localRotCF = CFrame.fromMatrix(blockData.pos, blockData.r, blockData.u, blockData.b)
+                    local absoluteTargetCFrame = baseCF:ToWorldSpace(localRotCF)
+
+                    task.spawn(function()
+                        local currentTotalCount = getCount(currentBlockType)
+                        buildRF:InvokeServer(currentBlockType, currentTotalCount, plotZone, localRotCF, true, absoluteTargetCFrame, false)
+                        
+                        local spawnedBlock = nil
+                        for attempt = 1, 15 do 
+                            if not terrainModule.Enabled then break end
+                            local list = unprocessedBlocks[currentBlockType]
+                            if list and #list > 0 then
+                                for idx, b in ipairs(list) do
+                                    if b.Parent and (b:GetPivot().Position - absoluteTargetCFrame.Position).Magnitude < 10 then
+                                        spawnedBlock = b
+                                        table.remove(list, idx)
+                                        break
+                                    end
+                                end
+                            end
+                            if spawnedBlock then break end
+                            task.wait() 
+                        end
+                        
+                        if spawnedBlock and terrainModule.Enabled then
+                            task.spawn(function() scaleRF:InvokeServer(spawnedBlock, targetSize, absoluteTargetCFrame) end)
+                        end
+                        threadsCompleted = threadsCompleted + 1
+                    end)
+                    
+                    if spawnDelayRate > 0 then task.wait(spawnDelayRate) else
+                        if i % spawnBatchSize == 0 then task.wait() end
+                    end
+                end
+
+                while threadsCompleted < totalNeeded and terrainModule.Enabled do task.wait() end
+                
+                notify('TerrainGen', '✅ Terrain Build Complete!', 5, 'info')
+                terrainModule:Toggle()
+            end)
+        end
+    })
+
+    -- =========================================================================
+    -- UI COMPONENTS & BUTTONS
+    -- =========================================================================
+    terrainModule:CreateButton({ Name = 'Preview Hologram', Function = renderPreview })
+    terrainModule:CreateButton({
+        Name = 'Clear Preview',
+        Function = function()
+            if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
+            cachedTerrainData = {}
+            notify('Cleared', 'Terrain preview cleared.', 3, 'info')
+        end
+    })
+
+    -- Size parameters
+    gridXSlider = terrainModule:CreateSlider({ Name = 'Grid X (Width)', Min = 10, Max = 100, Default = 30, Function = function() end })
+    gridZSlider = terrainModule:CreateSlider({ Name = 'Grid Z (Depth)', Min = 10, Max = 100, Default = 30, Function = function() end })
+    sizeSlider = terrainModule:CreateSlider({ Name = 'Block Size (x10)', Min = 1, Max = 100, Default = 20, Tooltip = "20 = 2x2x2 stud blocks" })
+
+    -- Noise shaping parameters
+    heightSlider = terrainModule:CreateSlider({ Name = 'Mountain Height Max', Min = 1, Max = 300, Default = 50, Function = function() end })
+    scaleSlider = terrainModule:CreateSlider({ Name = 'Terrain Smoothness (Stretch)', Min = 10, Max = 500, Default = 150, Tooltip = "Higher = smoother, rolling hills." })
+    curveSlider = terrainModule:CreateSlider({ Name = 'Valley Exponent (x10)', Min = 1, Max = 50, Default = 15, Tooltip = "15 = 1.5. Flattens valleys and sharpens peaks." })
+    
+    -- Fractal parameters
+    octavesSlider = terrainModule:CreateSlider({ Name = 'Octaves (Detail Layers)', Min = 1, Max = 6, Default = 2, Tooltip = "More layers = bumpier, rockier terrain." })
+    persistenceSlider = terrainModule:CreateSlider({ Name = 'Persistence (Roughness %)', Min = 1, Max = 100, Default = 40, Tooltip = "How much detail the octaves add." })
+
+    -- Seed / Offsets
+    offXSlider = terrainModule:CreateSlider({ Name = 'Seed Offset X', Min = -10000, Max = 10000, Default = 0, Function = function() end })
+    offZSlider = terrainModule:CreateSlider({ Name = 'Seed Offset Z', Min = -10000, Max = 10000, Default = 0, Function = function() end })
+
+    -- Toggles and Data
+    voxelToggle = terrainModule:CreateToggle({ Name = 'Voxel Mode (Minecraft Style)', Default = false, Tooltip = "Snaps blocks to grid. Uncheck for slanted smooth terrain." })
+    blockDropdown = terrainModule:CreateDropdown({ Name = 'Base Block', List = getAvailableBlocks(), Function = function() end})
+    fallbackBox = terrainModule:CreateTextBox({ Name = 'Fallbacks', Default = "PlasticBlock, WoodBlock" })
+    
+    speedSlider = terrainModule:CreateSlider({ Name = 'Spawn Speed', Min = 100, Max = 1000, Default = 500, Function = function() end })
+    maxModeToggle = terrainModule:CreateToggle({ Name = 'Max Mode', Default = false })
+
+end)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
