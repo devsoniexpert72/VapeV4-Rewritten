@@ -2590,12 +2590,17 @@ end)
 
 
 
-
 run(function()
     local vape = shared.vape
     if not vape then return end
 
-    -- 1. Create the Trolling Category
+    -- 1. Create the Categories
+    local babftCategory = vape:CreateCategory({
+        Name = 'BABFT Tools',
+        Icon = 'rbxassetid://0', 
+        Size = UDim2.fromOffset(16, 16)
+    })
+    
     local trollingCategory = vape:CreateCategory({
         Name = 'Trolling',
         Icon = 'rbxassetid://0', 
@@ -2605,12 +2610,28 @@ run(function()
     -- =========================================================================
     -- GLOBALS & UTILITIES
     -- =========================================================================
+    local HttpService = game:GetService("HttpService")
+    local repStorage = game:GetService("ReplicatedStorage")
     local lp = game:GetService("Players").LocalPlayer
 
     local function notify(title, text, duration, typeTheme)
         if vape and vape.CreateNotification then
             vape:CreateNotification(title, text, duration or 5, typeTheme or 'info')
         end
+    end
+
+    local function getBuildFiles()
+        local files = {}
+        local suc, res = pcall(function() return listfiles("") end)
+        if suc and res then
+            for _, f in ipairs(res) do
+                if f:lower():match("%.build$") or f:lower():match("%.txt$") then
+                    table.insert(files, f:match("([^/%\\]+)$"))
+                end
+            end
+        end
+        if #files == 0 then table.insert(files, "build.txt") end
+        return files
     end
 
     local function getPlayerNames(includeAll)
@@ -2622,10 +2643,115 @@ run(function()
         return names
     end
 
+    local function getCount(name)
+        local d = lp:WaitForChild("Data"):FindFirstChild(name)
+        return (d and d:IsA("IntValue")) and d.Value or 0
+    end
+
+    local function checkIsScalable(name)
+        return string.find(name, "Block") ~= nil
+    end
+
+    local function parseRedundancy(text)
+        local list = {}
+        if not text or text == "" then return list end
+        for match in text:gmatch("[^,]+") do
+            table.insert(list, match:match("^%s*(.-)%s*$"))
+        end
+        return list
+    end
+
+    local function ParseVec(val, def)
+        if type(val) == "table" then
+            local r, g, b = val[1] or def[1], val[2] or def[2], val[3] or def[3]
+            if r > 1 or g > 1 or b > 1 then return {r/255, g/255, b/255} end
+            return {r, g, b}
+        end
+        if type(val) == "string" then
+            local parts = {}
+            for num in string.gmatch(val, "[%d%.%-]+") do table.insert(parts, tonumber(num)) end
+            if #parts >= 3 then 
+                local r, g, b = parts[1], parts[2], parts[3]
+                if r > 1 or g > 1 or b > 1 then return {r/255, g/255, b/255} end
+                return {r, g, b}
+            end
+        end
+        return def
+    end
+
+    local formatDropdown, autoDetectToggle
+    local function normalizeBuildData(rawData)
+        local formatType = formatDropdown.Value
+        
+        if autoDetectToggle.Enabled then
+            if type(rawData) == "table" then
+                if rawData[1] then
+                    if type(rawData[1]) == "table" and rawData[1].Type then
+                        formatType = "Maxima Format"
+                    elseif type(rawData[1]) == "table" and type(rawData[1][1]) == "string" then
+                        formatType = "Luau Pro Format"
+                    end
+                else
+                    formatType = "Vape AutoBuild"
+                end
+            end
+        end
+
+        local normalized = {}
+
+        if formatType == "Maxima Format" then
+            for _, bData in ipairs(rawData) do
+                table.insert(normalized, {
+                    Type = bData.Type,
+                    CFrame = bData.CFrame,
+                    Size = ParseVec(bData.Size, {2,2,2}),
+                    Color = ParseVec(bData.Color, nil),
+                    Props = bData.Props or {}
+                })
+            end
+        else
+            local dict = (formatType == "Luau Pro Format") and rawData[2] or rawData
+            for bType, list in pairs(dict) do
+                if type(list) == "table" then
+                    for _, bData in ipairs(list) do
+                        local pos = ParseVec(bData.Position, {0,0,0})
+                        local rot = ParseVec(bData.Rotation, {0,0,0})
+                        local cf = CFrame.new(pos[1], pos[2], pos[3]) * CFrame.Angles(math.rad(rot[1]), math.rad(rot[2]), math.rad(rot[3]))
+                        
+                        local props = bData.Props or {}
+                        if bData.Anchored ~= nil then props.Anc = bData.Anchored end
+                        if bData.CanCollide ~= nil then props.Col = bData.CanCollide end
+                        if bData.Transparency ~= nil then props.Tr = bData.Transparency end
+                        if bData.BoolValues then for k,v in pairs(bData.BoolValues) do props[k] = v end end
+                        if bData.NumberValues then for k,v in pairs(bData.NumberValues) do props[k] = v end end
+
+                        table.insert(normalized, {
+                            Type = bType,
+                            CFrame = {cf:GetComponents()},
+                            Size = ParseVec(bData.Size, {2,2,2}),
+                            Color = ParseVec(bData.Color, nil),
+                            Props = props
+                        })
+                    end
+                end
+            end
+        end
+        return normalized
+    end
+
+    local function getPlotZone()
+        local t = tostring(lp.Team)
+        local plotName = "WhiteZone"
+        if t=="red" then plotName="Really redZone" elseif t=="blue" then plotName="Really blueZone" elseif t=="black" then plotName="BlackZone" elseif t=="yellow" then plotName="New YellerZone" elseif t=="magenta" then plotName="MagentaZone" elseif t=="green" then plotName="CamoZone" end
+        return workspace:FindFirstChild(plotName)
+    end
+
+
     -- =========================================================================
-    -- FE BRING PLAYER (TPUA PHYSICS METHOD)
+    -- TROLLING MODULES (PHYSICS BASED)
     -- =========================================================================
     
+    -- 1. FE BRING PLAYER (TPUA METHOD)
     local feBringModule
     local bringTargetDropdown
     
@@ -2635,8 +2761,6 @@ run(function()
         local targetRoot = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
         
         if not hum or not targetRoot then return false end
-
-        -- Skip if they are already sitting in another seat
         if hum.SeatPart or hum.Sit then
             notify("FE Bring", targetPlayer.Name .. " is already sitting. Skipping...", 3, "warning")
             return false
@@ -2650,30 +2774,26 @@ run(function()
         
         local seats = {}
         for _, v in ipairs(playerBlocksFolder:GetDescendants()) do
-            if v:IsA("Seat") or v:IsA("VehicleSeat") then table.insert(seats, v) end
+            if (v:IsA("Seat") or v:IsA("VehicleSeat")) and not v.Anchored then table.insert(seats, v) end
         end
         
         if #seats ~= 2 then
-            notify("FE Bring", "Exactly 2 seats required! Found " .. #seats, 5, "alert")
+            notify("FE Bring", "Exactly 2 unanchored seats required! Found " .. #seats, 5, "alert")
             return false
         end
         
         local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
         if not root then return false end
         
-        -- Find the furthest seat
         local furthestSeat = seats[1]
         if (seats[2].Position - root.Position).Magnitude > (seats[1].Position - root.Position).Magnitude then
             furthestSeat = seats[2]
         end
         
-        -- TPUA Prep: Unanchor and clear existing movers
-        furthestSeat.Anchored = false
         for _, c in ipairs(furthestSeat:GetChildren()) do
             if c:IsA("BodyPosition") or c:IsA("BodyGyro") then c:Destroy() end
         end
         
-        -- TPUA Movers
         local bp = Instance.new("BodyPosition", furthestSeat)
         bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
         bp.P = 20000
@@ -2689,14 +2809,11 @@ run(function()
         local startTime = tick()
         local bindable = Instance.new("BindableEvent")
         
-        -- Listen for capture
         local occConn
         occConn = furthestSeat:GetPropertyChangedSignal("Occupant"):Connect(function()
             if furthestSeat.Occupant and furthestSeat.Occupant.Parent == targetPlayer.Character then
                 caught = true
                 notify("FE Bring", "Caught " .. targetPlayer.Name .. "! Flying back to you...", 3, "info")
-                
-                -- DO NOT CFRAME DIRECTLY. We wait 2.5 seconds for the BodyPosition to drag the player back to us.
                 task.delay(2.5, function()
                     if occConn then occConn:Disconnect() end
                     bindable:Fire(true)
@@ -2704,20 +2821,17 @@ run(function()
             end
         end)
         
-        -- Tracking Loop
         local bringConn
         bringConn = game:GetService("RunService").Heartbeat:Connect(function()
             if not root or not root.Parent then return end
 
             if caught then 
-                -- TPUA Return Flight: Continuously pull the seat 10 studs in front of LocalPlayer
                 local destCF = root.CFrame * CFrame.new(0, 0, -10)
                 bp.Position = destCF.Position
                 bg.CFrame = destCF
                 return 
             end
             
-            -- 10-Second Timeout
             if tick() - startTime > 10 then
                 notify("FE Bring", "Timeout reaching " .. targetPlayer.Name .. ". Skipping...", 3, "warning")
                 if bringConn then bringConn:Disconnect() end
@@ -2733,7 +2847,6 @@ run(function()
                 return
             end
             
-            -- TPUA Capture Flight: Jittering BodyPosition to net the target
             local tRoot = targetPlayer.Character.HumanoidRootPart
             local jitterX = math.sin(tick() * 35) * 1.5
             local jitterY = math.cos(tick() * 40) * 1.5
@@ -2752,7 +2865,7 @@ run(function()
 
     feBringModule = vape.Categories['Trolling']:CreateModule({
         Name = 'FE Bring Player',
-        Tooltip = 'Requires 2 seats. TPUA logic physically flies the furthest seat to the target, then drags them to you.',
+        Tooltip = 'Requires 2 unanchored seats. Physically flies the furthest seat to the target, then drags them to you.',
         Function = function(callback)
             if not callback then return end
             
@@ -2784,17 +2897,14 @@ run(function()
     bringTargetDropdown = feBringModule:CreateDropdown({ Name = 'Target Player', List = getPlayerNames(true), Function = function() end })
     feBringModule:CreateButton({ Name = 'Refresh Players', Function = function() bringTargetDropdown:Change(getPlayerNames(true)); notify("Refreshed", "Player list updated.", 3, "info") end })
 
-    -- =========================================================================
-    -- CANNON BLAST MODULE
-    -- =========================================================================
-    
+    -- 2. CANNON BLAST (PHYSICS MOVERS)
     local cannonBlastModule
     local cannonTargetDropdown
     local cannonRotXSlider, cannonRotYSlider, cannonRotZSlider
     
     cannonBlastModule = vape.Categories['Trolling']:CreateModule({
         Name = 'Cannon Blast',
-        Tooltip = 'Teleports all your cannons into a circle around the target, aims, and fires after 2 seconds.',
+        Tooltip = 'Uses BodyMovers to fly all unanchored cannons around the target, aims, and fires after 2 seconds.',
         Function = function(callback)
             if not callback then return end
             
@@ -2809,36 +2919,44 @@ run(function()
                 end
 
                 local playerBlocksFolder = workspace:FindFirstChild("Blocks") and workspace.Blocks:FindFirstChild(lp.Name)
-                if not playerBlocksFolder then 
-                    notify("Cannon Blast", "Your blocks folder was not found!", 5, "alert")
-                    cannonBlastModule:Toggle()
-                    return 
-                end
+                if not playerBlocksFolder then return end
 
                 local cannons = {}
                 for _, v in ipairs(playerBlocksFolder:GetChildren()) do
                     if v.Name:lower():match("cannon") then
-                        table.insert(cannons, v)
+                        local mainPart = v:IsA("BasePart") and v or v:FindFirstChildWhichIsA("BasePart", true)
+                        if mainPart and not mainPart.Anchored then
+                            table.insert(cannons, mainPart)
+                        end
                     end
                 end
 
                 if #cannons == 0 then
-                    notify("Cannon Blast", "No cannons found in your blocks!", 5, "alert")
+                    notify("Cannon Blast", "No unanchored cannons found! Ensure they are unanchored.", 5, "alert")
                     cannonBlastModule:Toggle()
                     return
                 end
 
-                notify("Cannon Blast", "Aiming " .. #cannons .. " cannons at " .. targetName .. "...", 3, "info")
+                notify("Cannon Blast", "Flying " .. #cannons .. " cannons to " .. targetName .. "...", 3, "info")
 
-                -- Force anchor EVERYTHING inside the cannon model to prevent physics drift
-                for _, cannon in ipairs(cannons) do
-                    if cannon:IsA("Model") then
-                        for _, p in ipairs(cannon:GetDescendants()) do
-                            if p:IsA("BasePart") then p.Anchored = true end
-                        end
-                    elseif cannon:IsA("BasePart") then
-                        cannon.Anchored = true
+                local movers = {}
+                for _, part in ipairs(cannons) do
+                    for _, c in ipairs(part:GetChildren()) do
+                        if c:IsA("BodyPosition") or c:IsA("BodyGyro") then c:Destroy() end
                     end
+                    
+                    local bp = Instance.new("BodyPosition", part)
+                    bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+                    bp.P = 15000
+                    bp.D = 500
+                    
+                    local bg = Instance.new("BodyGyro", part)
+                    bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+                    bg.P = 10000
+                    
+                    table.insert(movers, {bp = bp, bg = bg, part = part, model = part.Parent})
+                    cannonBlastModule:Clean(bp)
+                    cannonBlastModule:Clean(bg)
                 end
 
                 local blastConn
@@ -2851,18 +2969,16 @@ run(function()
                         return
                     end
                     
-                    local tRoot = targetPlayer.Character.HumanoidRootPart
-                    local tPos = tRoot.Position
+                    local tPos = targetPlayer.Character.HumanoidRootPart.Position
                     
                     if tick() - startTime > 2 then
                         if blastConn then blastConn:Disconnect() end
                         
                         notify("Cannon Blast", "BOOM!", 3, "info")
-                        for _, cannon in ipairs(cannons) do
-                            local cd = cannon:FindFirstChildWhichIsA("ClickDetector", true)
-                            if cd and fireclickdetector then 
-                                pcall(fireclickdetector, cd) 
-                            end
+                        for _, m in ipairs(movers) do
+                            local source = m.model or m.part
+                            local cd = source:FindFirstChildWhichIsA("ClickDetector", true)
+                            if cd and fireclickdetector then pcall(fireclickdetector, cd) end
                         end
                         
                         task.delay(0.5, function()
@@ -2875,19 +2991,13 @@ run(function()
                     local cRotY = cannonRotYSlider.Value
                     local cRotZ = cannonRotZSlider.Value
                     
-                    for i, cannon in ipairs(cannons) do
-                        local angle = (i / #cannons) * math.pi * 2
+                    for i, m in ipairs(movers) do
+                        local angle = (i / #movers) * math.pi * 2
                         local offset = Vector3.new(math.cos(angle) * 5, 0, math.sin(angle) * 5)
                         local destPos = tPos + offset
                         
-                        -- LookAt logic stacked with the custom pitch/yaw/roll sliders
-                        local aimCF = CFrame.new(destPos, tPos) * CFrame.Angles(math.rad(cRotX), math.rad(cRotY), math.rad(cRotZ))
-                        
-                        if cannon:IsA("Model") then
-                            cannon:PivotTo(aimCF)
-                        elseif cannon:IsA("BasePart") then
-                            cannon.CFrame = aimCF
-                        end
+                        m.bp.Position = destPos
+                        m.bg.CFrame = CFrame.lookAt(m.part.Position, tPos) * CFrame.Angles(math.rad(cRotX), math.rad(cRotY), math.rad(cRotZ))
                     end
                 end)
                 
@@ -2898,10 +3008,678 @@ run(function()
 
     cannonTargetDropdown = cannonBlastModule:CreateDropdown({ Name = 'Target Player', List = getPlayerNames(false), Function = function() end })
     cannonBlastModule:CreateButton({ Name = 'Refresh Players', Function = function() cannonTargetDropdown:Change(getPlayerNames(false)); notify("Refreshed", "Player list updated.", 3, "info") end })
-    
     cannonRotXSlider = cannonBlastModule:CreateSlider({ Name = 'Cannon Rotation X', Min = -180, Max = 180, Default = -15, Function = function() end })
     cannonRotYSlider = cannonBlastModule:CreateSlider({ Name = 'Cannon Rotation Y', Min = -180, Max = 180, Default = 0, Function = function() end })
     cannonRotZSlider = cannonBlastModule:CreateSlider({ Name = 'Cannon Rotation Z', Min = -180, Max = 180, Default = 0, Function = function() end })
+
+
+    -- 3. HOMING MISSILE (THRUSTER BLOCK)
+    local homingMissileModule
+    local missileTargetDropdown
+    
+    homingMissileModule = vape.Categories['Trolling']:CreateModule({
+        Name = 'Homing Missile',
+        Tooltip = 'Flies an unanchored Thruster 100 studs up, then aggressively curves and locks onto the target.',
+        Function = function(callback)
+            if not callback then return end
+            
+            task.spawn(function()
+                local targetName = missileTargetDropdown.Value
+                local targetPlayer = game:GetService("Players"):FindFirstChild(targetName)
+                
+                if not targetPlayer then
+                    notify("Homing Missile", "Target not found!", 5, "alert")
+                    homingMissileModule:Toggle()
+                    return
+                end
+
+                local playerBlocksFolder = workspace:FindFirstChild("Blocks") and workspace.Blocks:FindFirstChild(lp.Name)
+                if not playerBlocksFolder then return end
+
+                local thrusters = {}
+                for _, v in ipairs(playerBlocksFolder:GetChildren()) do
+                    if v.Name:lower():match("thruster") then
+                        local mainPart = v:IsA("BasePart") and v or v:FindFirstChildWhichIsA("BasePart", true)
+                        if mainPart and not mainPart.Anchored then
+                            table.insert(thrusters, mainPart)
+                        end
+                    end
+                end
+
+                if #thrusters == 0 then
+                    notify("Homing Missile", "No unanchored Thrusters found! Ensure they are unanchored.", 5, "alert")
+                    homingMissileModule:Toggle()
+                    return
+                end
+
+                local missile = thrusters[1]
+                local root = lp.Character and lp.Character:FindFirstChild("HumanoidRootPart")
+                if not root then return end
+
+                notify("Homing Missile", "Launching Missile towards " .. targetName .. "!", 3, "info")
+
+                -- Clear old movers
+                for _, c in ipairs(missile:GetChildren()) do
+                    if c:IsA("BodyPosition") or c:IsA("BodyGyro") then c:Destroy() end
+                end
+
+                -- Turn on exhaust effect via ClickDetector if available
+                local cd = (missile.Parent and missile.Parent:FindFirstChildWhichIsA("ClickDetector", true)) or missile:FindFirstChildWhichIsA("ClickDetector", true)
+                if cd and fireclickdetector then pcall(fireclickdetector, cd) end
+
+                local bp = Instance.new("BodyPosition", missile)
+                bp.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+                bp.P = 15000
+                bp.D = 500
+                
+                local bg = Instance.new("BodyGyro", missile)
+                bg.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+                bg.P = 15000
+                
+                homingMissileModule:Clean(bp)
+                homingMissileModule:Clean(bg)
+
+                local phase = "Ascent"
+                local ascentPos = root.Position + Vector3.new(0, 100, 0)
+                
+                -- Ascent Phase Setup
+                bp.Position = ascentPos
+                bg.CFrame = CFrame.lookAt(missile.Position, ascentPos + Vector3.new(0, 1, 0)) * CFrame.Angles(math.pi/2, 0, 0)
+
+                task.delay(1.5, function() 
+                    if homingMissileModule.Enabled then phase = "Homing" end
+                end)
+
+                local missileConn
+                missileConn = game:GetService("RunService").Heartbeat:Connect(function()
+                    if not targetPlayer.Character or not targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                        if missileConn then missileConn:Disconnect() end
+                        homingMissileModule:Toggle()
+                        return
+                    end
+                    
+                    local tPos = targetPlayer.Character.HumanoidRootPart.Position
+
+                    if phase == "Ascent" then
+                        bp.Position = ascentPos
+                        bg.CFrame = CFrame.lookAt(missile.Position, ascentPos + Vector3.new(0, 1, 0)) * CFrame.Angles(math.pi/2, 0, 0)
+                        
+                    elseif phase == "Homing" then
+                        -- Aggressively increase speed and tracking power
+                        bp.P = 50000 
+                        
+                        local dist = (tPos - missile.Position).Magnitude
+                        
+                        if dist < 5 then
+                            -- Impact detected!
+                            notify("Homing Missile", "Target Hit!", 3, "info")
+                            if missileConn then missileConn:Disconnect() end
+                            task.delay(0.5, function()
+                                if homingMissileModule.Enabled then homingMissileModule:Toggle() end
+                            end)
+                            return
+                        end
+
+                        -- Dynamic Curve Algorithm: As magnitude closes in, the curve naturally tightens to 0 for a straight strike!
+                        local curveMultiplier = math.clamp(dist / 5, 0, 30) 
+                        local curveX = math.sin(tick() * 15) * curveMultiplier
+                        local curveY = math.cos(tick() * 18) * (curveMultiplier * 0.5)
+                        local curveZ = math.sin(tick() * 12) * curveMultiplier
+                        
+                        local dynamicTargetPos = tPos + Vector3.new(curveX, curveY, curveZ)
+                        
+                        bp.Position = dynamicTargetPos
+                        bg.CFrame = CFrame.lookAt(missile.Position, dynamicTargetPos) * CFrame.Angles(math.pi/2, 0, 0)
+                    end
+                end)
+                
+                homingMissileModule:Clean(missileConn)
+            end)
+        end
+    })
+
+    missileTargetDropdown = homingMissileModule:CreateDropdown({ Name = 'Target Player', List = getPlayerNames(false), Function = function() end })
+    homingMissileModule:CreateButton({ Name = 'Refresh Players', Function = function() missileTargetDropdown:Change(getPlayerNames(false)); notify("Refreshed", "Player list updated.", 3, "info") end })
+
+
+    -- =========================================================================
+    -- BABFT BUILDER MODULES (Preview & AutoBuild)
+    -- =========================================================================
+    
+    local previewBuilderModule
+    local fileDropdown, previewSpeedSlider, instaPreviewToggle, ghostPreviewToggle
+    local offX, offY, offZ, rotX, rotY, rotZ, scaleSlider, mirrorXToggle
+
+    local function applyPreviewOffsets()
+        if not previewBuilderModule.Enabled then return end
+        local plotZone = getPlotZone()
+        if not plotZone then return end
+        
+        local offsetCF = CFrame.new(offX.Value, offY.Value, offZ.Value) * CFrame.Angles(math.rad(rotX.Value), math.rad(rotY.Value), math.rad(rotZ.Value))
+        local baseCF = plotZone.CFrame * offsetCF
+        
+        for _, pData in ipairs(previewParts) do
+            if pData.part and pData.part.Parent then
+                local absoluteCF = baseCF * pData.relative
+                if pData.part:IsA("Model") then pData.part:PivotTo(absoluteCF) else pData.part.CFrame = absoluteCF end
+            end
+        end
+    end
+
+    previewBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
+        Name = 'Preview Builder',
+        Tooltip = 'Shows a highly accurate hologram that rotates correctly around its pivot.',
+        Function = function(callback)
+            if callback then
+                local targetFile = fileDropdown.Value
+                if not targetFile or targetFile == "" then targetFile = "build.txt" end
+
+                if not isfile(targetFile) then 
+                    notify('Preview Error', 'Could not find file: ' .. targetFile, 5, 'alert')
+                    previewBuilderModule:Toggle() return 
+                end
+                
+                local suc, rawData = pcall(function() return HttpService:JSONDecode(readfile(targetFile)) end)
+                if not suc then 
+                    notify('Preview Error', 'Failed to decode JSON data.', 5, 'alert')
+                    previewBuilderModule:Toggle() return 
+                end
+
+                local buildData = normalizeBuildData(rawData)
+                if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
+                
+                local previewFolder = Instance.new("Folder")
+                previewFolder.Name = previewFolderName
+                previewFolder.Parent = workspace
+
+                table.clear(previewParts)
+                local buildingParts = repStorage:WaitForChild("BuildingParts")
+                local totalBlocks = 0
+                
+                local spawnDelayRate = 1 / previewSpeedSlider.Value
+                local spawnBatchSize = math.max(1, math.ceil(0.015 / spawnDelayRate))
+
+                local mirror = mirrorXToggle.Enabled
+                local scaleMultiplier = scaleSlider.Value / 10 
+                local isGhost = ghostPreviewToggle.Enabled
+
+                notify('Preview Loading', 'Generating Blueprint...', 3, 'info')
+
+                for i, data in ipairs(buildData) do
+                    if not previewBuilderModule.Enabled then break end
+
+                    local template = buildingParts:FindFirstChild(data.Type)
+                    if template then
+                        local ghost = template:Clone()
+                        for _, s in ipairs(ghost:GetDescendants()) do 
+                            if s:IsA("LuaSourceContainer") then s:Destroy() end 
+                        end
+
+                        local rawPos = Vector3.new(data.CFrame[1], data.CFrame[2], data.CFrame[3])
+                        local rawSize = Vector3.new(unpack(data.Size))
+                        local rx, ry, rz = CFrame.new(unpack(data.CFrame)):ToEulerAnglesXYZ()
+                        
+                        if mirror then
+                            rawPos = Vector3.new(-rawPos.X, rawPos.Y, rawPos.Z)
+                            ry, rz = -ry, -rz 
+                        end
+
+                        rawPos = rawPos * scaleMultiplier
+                        local relativeCF = CFrame.new(rawPos) * CFrame.Angles(rx, ry, rz)
+                        
+                        local defaultTr = 0
+                        local tp = template:IsA("BasePart") and template or template:FindFirstChildWhichIsA("BasePart", true)
+                        if tp then defaultTr = tp.Transparency end
+
+                        local function applyVisuals(part)
+                            if part:IsA("BasePart") then
+                                part.Anchored = true
+                                if isGhost then
+                                    part.CanCollide = false
+                                    part.Transparency = 0.6
+                                else
+                                    part.CanCollide = (data.Props and data.Props.Col ~= false)
+                                    part.Transparency = (data.Props and data.Props.Tr) or defaultTr
+                                end
+                                if data.Color then part.Color = Color3.new(unpack(data.Color)) end
+                                
+                                if scaleMultiplier ~= 1 and checkIsScalable(data.Type) then
+                                    part.Size = rawSize * scaleMultiplier
+                                else
+                                    part.Size = rawSize
+                                end
+                            end
+                        end
+                        
+                        applyVisuals(ghost)
+                        for _, child in ipairs(ghost:GetDescendants()) do applyVisuals(child) end
+                        
+                        ghost.Name = "Preview_" .. data.Type
+                        ghost.Parent = previewFolder
+                        
+                        table.insert(previewParts, { part = ghost, relative = relativeCF })
+                        totalBlocks = totalBlocks + 1
+                    end
+
+                    if not instaPreviewToggle.Enabled then
+                        if i % spawnBatchSize == 0 then task.wait() end
+                    end
+                end
+                
+                if previewBuilderModule.Enabled then
+                    notify('Preview Complete', 'Rendered ' .. totalBlocks .. ' parts.', 5, 'info')
+                    applyPreviewOffsets() 
+                end
+            else
+                if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
+                table.clear(previewParts)
+            end
+        end
+    })
+
+    formatDropdown = previewBuilderModule:CreateDropdown({ Name = 'File Format', List = {'Vape AutoBuild', 'Luau Pro Format', 'Maxima Format'}, Function = function() end })
+    autoDetectToggle = previewBuilderModule:CreateToggle({ Name = 'Auto Detect Format', Default = true, Function = function() end })
+    fileDropdown = previewBuilderModule:CreateDropdown({ Name = 'Build File', List = getBuildFiles(), Function = function() end })
+    previewBuilderModule:CreateButton({ Name = 'Refresh File List', Function = function() fileDropdown:Change(getBuildFiles()); notify('Refreshed', 'Files updated!', 3, 'info') end })
+    
+    previewSpeedSlider = previewBuilderModule:CreateSlider({ Name = 'Preview Load Speed', Min = 100, Max = 1000, Default = 500, Function = function() end })
+    instaPreviewToggle = previewBuilderModule:CreateToggle({ Name = 'Insta-Preview', Default = false, Function = function() end })
+    ghostPreviewToggle = previewBuilderModule:CreateToggle({ Name = 'Ghost Preview Style', Default = true, Function = function() end })
+
+    offX = previewBuilderModule:CreateSlider({ Name = 'Offset X', Min = -1000, Max = 1000, Default = 100, Function = applyPreviewOffsets })
+    offY = previewBuilderModule:CreateSlider({ Name = 'Offset Y', Min = -1000, Max = 1000, Default = 100, Function = applyPreviewOffsets })
+    offZ = previewBuilderModule:CreateSlider({ Name = 'Offset Z', Min = -1000, Max = 1000, Default = 100, Function = applyPreviewOffsets })
+    rotX = previewBuilderModule:CreateSlider({ Name = 'Rotate X', Min = -180, Max = 180, Default = 0, Function = applyPreviewOffsets })
+    rotY = previewBuilderModule:CreateSlider({ Name = 'Rotate Y', Min = -180, Max = 180, Default = 0, Function = applyPreviewOffsets })
+    rotZ = previewBuilderModule:CreateSlider({ Name = 'Rotate Z', Min = -180, Max = 180, Default = 0, Function = applyPreviewOffsets })
+
+    scaleSlider = previewBuilderModule:CreateSlider({ Name = 'Scale Multiplier (x10)', Min = 1, Max = 50, Default = 10, Function = function() end })
+    mirrorXToggle = previewBuilderModule:CreateToggle({ Name = 'Mirror Build (X-Axis)', Default = false, Function = function() end })
+
+    -- AUTOBUILDER
+    local autoBuilderModule
+    local redundancyTextBox, buildSpeedSlider, maxModeToggle
+    local useScaleToggle, usePaintToggle, usePropToggle
+
+    autoBuilderModule = vape.Categories['BABFT Tools']:CreateModule({
+        Name = 'AutoBuilder',
+        Tooltip = 'Automatically loads and builds your BABFT structures with redundancies.',
+        Function = function(callback)
+            if not callback then return end
+            
+            task.spawn(function()
+                local targetFile = fileDropdown.Value
+                if not targetFile or targetFile == "" then targetFile = "build.txt" end
+
+                if not isfile(targetFile) then 
+                    notify('AutoBuilder', 'No build file found named: ' .. targetFile, 5, 'alert')
+                    autoBuilderModule:Toggle() return 
+                end
+                
+                local suc, rawData = pcall(function() return HttpService:JSONDecode(readfile(targetFile)) end)
+                if not suc then 
+                    notify('AutoBuilder', 'Failed to decode JSON.', 5, 'alert')
+                    autoBuilderModule:Toggle() return 
+                end
+                
+                local buildData = normalizeBuildData(rawData)
+
+                local char = lp.Character or lp.CharacterAdded:Wait()
+                local function getTool(toolName, equip)
+                    local tool = char:FindFirstChild(toolName) or lp.Backpack:FindFirstChild(toolName)
+                    if tool then
+                        if equip and tool.Parent ~= char then tool.Parent = char 
+                        elseif not equip and tool.Parent == char then tool.Parent = lp.Backpack end
+                    end
+                    return tool
+                end
+
+                local buildTool = getTool("BuildingTool", false)
+                local scaleTool = getTool("ScalingTool", false)
+                local paintTool = getTool("PaintingTool", false)
+                local propTool = getTool("PropertiesTool", false)
+
+                if not buildTool then 
+                    notify('AutoBuilder', 'Missing Building Tool!', 5, 'alert')
+                    autoBuilderModule:Toggle() return 
+                end
+
+                local buildRF = buildTool:WaitForChild("RF")
+                local scaleRF = scaleTool and scaleTool:FindFirstChild("RF")
+                local propRF = propTool and propTool:WaitForChild("SetPropertieRF")
+                local plotZone = getPlotZone()
+                local playerBlocksFolder = workspace:WaitForChild("Blocks"):WaitForChild(lp.Name)
+
+                local fallbacks = parseRedundancy(redundancyTextBox.Value)
+                local consumedTracker = {}
+                local missingDetails = {}
+                local totalMissing = 0
+
+                local function getBestFallback()
+                    local best, maxAmt = nil, 0
+                    for _, fb in ipairs(fallbacks) do
+                        local amt = getCount(fb) - (consumedTracker[fb] or 0)
+                        if amt > maxAmt then maxAmt = amt; best = fb end
+                    end
+                    return best
+                end
+
+                for i, d in ipairs(buildData) do
+                    local t = d.Type
+                    consumedTracker[t] = (consumedTracker[t] or 0) + 1
+                    
+                    if consumedTracker[t] > getCount(t) then
+                        local bestFB = getBestFallback()
+                        if bestFB then
+                            consumedTracker[bestFB] = (consumedTracker[bestFB] or 0) + 1
+                            consumedTracker[t] = consumedTracker[t] - 1 
+                        else
+                            missingDetails[t] = (missingDetails[t] or 0) + 1
+                            totalMissing = totalMissing + 1
+                        end
+                    end
+                end
+
+                if totalMissing > 0 then
+                    local missingStr = ""
+                    local dispCount = 0
+                    for bType, amt in pairs(missingDetails) do
+                        missingStr = missingStr .. amt .. "x " .. bType .. ", "
+                        dispCount = dispCount + 1
+                        if dispCount >= 3 then break end
+                    end
+                    missingStr = missingStr:sub(1, -3)
+                    if totalMissing > 3 then missingStr = missingStr .. " and more..." end
+                    notify('Missing Items', "Warning: Missing " .. missingStr, 8, 'warning')
+                end
+
+                pcall(function() workspace:WaitForChild("InstaLoadFunction", 1):InvokeServer() end)
+                notify('AutoBuilder', 'Initiating Construction...', 5, 'info')
+
+                local spawnDelayRate = 1 / buildSpeedSlider.Value
+                local spawnBatchSize = math.max(1, math.ceil(0.015 / spawnDelayRate))
+
+                if maxModeToggle.Enabled then
+                    spawnDelayRate = 0
+                    spawnBatchSize = 999999
+                end
+
+                local paintArgs = {}
+                local propBatches = {
+                    Unanchor = {}, Uncollide = {}, NoShadow = {},
+                    Transparency = { [1] = {}, [2] = {}, [3] = {}, [4] = {} }, 
+                    Toggles = { Aim = {}, ReverseSpin = {} },
+                    Values = { ["Delay time"] = {}, ["Piston speed"] = {}, ["Piston length"] = {}, ["Target length"] = {}, ["Max length"] = {}, ["Min length"] = {}, ["Stiffness"] = {}, ["Damping"] = {}, ["Length"] = {}, ["Angle limit"] = {} },
+                    WheelSpeed = {}, WheelTorque = {}
+                }
+
+                local threadsCompleted, totalExpected = 0, #buildData
+                local unprocessedBlocks = {}
+                local processedBlocks = {}
+
+                local blockAddedConn = playerBlocksFolder.ChildAdded:Connect(function(b)
+                    if not processedBlocks[b] then
+                        if not unprocessedBlocks[b.Name] then unprocessedBlocks[b.Name] = {} end
+                        table.insert(unprocessedBlocks[b.Name], b)
+                    end
+                end)
+                autoBuilderModule:Clean(blockAddedConn)
+
+                for _, b in ipairs(playerBlocksFolder:GetChildren()) do
+                    if not unprocessedBlocks[b.Name] then unprocessedBlocks[b.Name] = {} end
+                    table.insert(unprocessedBlocks[b.Name], b)
+                end
+
+                table.clear(consumedTracker)
+                local buildingParts = repStorage:WaitForChild("BuildingParts")
+                local mirror = mirrorXToggle.Enabled
+                local scaleMultiplier = scaleSlider.Value / 10 
+                local offsetCF = CFrame.new(offX.Value, offY.Value, offZ.Value) * CFrame.Angles(math.rad(rotX.Value), math.rad(rotY.Value), math.rad(rotZ.Value))
+
+                for i, data in ipairs(buildData) do
+                    if not autoBuilderModule.Enabled then break end
+
+                    local blockType = data.Type
+                    consumedTracker[blockType] = (consumedTracker[blockType] or 0) + 1
+                    if consumedTracker[blockType] > getCount(blockType) then
+                        local bestFB = getBestFallback()
+                        if bestFB then
+                            consumedTracker[bestFB] = (consumedTracker[bestFB] or 0) + 1
+                            consumedTracker[blockType] = consumedTracker[blockType] - 1
+                            blockType = bestFB
+                        end
+                    end
+                    
+                    local rawPos = Vector3.new(data.CFrame[1], data.CFrame[2], data.CFrame[3])
+                    local rawSize = Vector3.new(unpack(data.Size))
+                    local rx, ry, rz = CFrame.new(unpack(data.CFrame)):ToEulerAnglesXYZ()
+                    
+                    if mirror then
+                        rawPos = Vector3.new(-rawPos.X, rawPos.Y, rawPos.Z)
+                        ry, rz = -ry, -rz 
+                    end
+
+                    rawPos = rawPos * scaleMultiplier
+                    local baseRelativeCF = CFrame.new(rawPos) * CFrame.Angles(rx, ry, rz)
+                    
+                    local savedRelativeCFrame = offsetCF * baseRelativeCF
+                    local absoluteTargetCFrame = plotZone.CFrame:ToWorldSpace(savedRelativeCFrame)
+                    
+                    local isScalable = checkIsScalable(blockType)
+                    local targetSize = isScalable and (rawSize * scaleMultiplier) or rawSize
+                    local targetColor = data.Color and Color3.new(unpack(data.Color)) or nil
+                    local props = data.Props
+                    
+                    task.spawn(function()
+                        local currentTotalCount = getCount(blockType)
+                        if currentTotalCount > 0 then
+                            buildRF:InvokeServer(blockType, currentTotalCount, plotZone, savedRelativeCFrame, true, absoluteTargetCFrame, false)
+                            
+                            local spawnedBlock = nil
+                            for attempt = 1, 15 do 
+                                if not autoBuilderModule.Enabled then break end
+                                local list = unprocessedBlocks[blockType]
+                                if list and #list > 0 then
+                                    for idx, b in ipairs(list) do
+                                        if b.Parent and (b:GetPivot().Position - absoluteTargetCFrame.Position).Magnitude < 10 then
+                                            spawnedBlock = b
+                                            processedBlocks[b] = true
+                                            table.remove(list, idx)
+                                            break
+                                        end
+                                    end
+                                end
+                                if spawnedBlock then break end
+                                task.wait() 
+                            end
+                            
+                            if spawnedBlock and autoBuilderModule.Enabled then
+                                if isScalable and scaleRF and useScaleToggle.Enabled then 
+                                    task.spawn(function() scaleRF:InvokeServer(spawnedBlock, targetSize, absoluteTargetCFrame) end)
+                                end
+                                
+                                local template = buildingParts:FindFirstChild(blockType)
+                                local tp = template and (template:IsA("BasePart") and template or template:FindFirstChildWhichIsA("BasePart", true))
+
+                                if usePaintToggle.Enabled and targetColor then
+                                    local defColor = tp and tp.Color or Color3.new(1,1,1)
+                                    if math.abs(targetColor.R - defColor.R) > 0.01 or math.abs(targetColor.G - defColor.G) > 0.01 or math.abs(targetColor.B - defColor.B) > 0.01 then
+                                        table.insert(paintArgs, {spawnedBlock, targetColor})
+                                    end
+                                end
+                                
+                                if usePropToggle.Enabled and props then
+                                    if props.Anc == false then table.insert(propBatches.Unanchor, spawnedBlock) end
+                                    if props.Col == false then table.insert(propBatches.Uncollide, spawnedBlock) end
+                                    if props.CS == false then table.insert(propBatches.NoShadow, spawnedBlock) end
+                                    
+                                    local nativeTr = tp and tp.Transparency or 0
+                                    local desiredTr = props.Tr or nativeTr
+                                    if desiredTr ~= nativeTr then
+                                        local steps = math.floor((desiredTr / 0.25) + 0.5)
+                                        if steps > 0 and steps <= 4 then table.insert(propBatches.Transparency[steps], spawnedBlock) end
+                                    end
+                                    
+                                    local function addVal(cat, val)
+                                        if val then
+                                            propBatches.Values[cat][val] = propBatches.Values[cat][val] or {}
+                                            table.insert(propBatches.Values[cat][val], spawnedBlock)
+                                        end
+                                    end
+                                    
+                                    addVal("Delay time", props.Delay)
+                                    addVal("Piston speed", props.PistonSpeed)
+                                    addVal("Piston length", props.PistonLength)
+                                    addVal("Target length", props.SpringTarget)
+                                    addVal("Max length", props.SpringMax)
+                                    addVal("Min length", props.SpringMin)
+                                    addVal("Stiffness", props.SpringStiff)
+                                    addVal("Damping", props.SpringDamp)
+                                    addVal("Length", props.RodLength or props.RopeLength)
+                                    addVal("Angle limit", props.RodAngle)
+                                    
+                                    if props.Aim == false then table.insert(propBatches.Toggles.Aim, spawnedBlock) end
+                                    if props.ReverseSpin == true then table.insert(propBatches.Toggles.ReverseSpin, spawnedBlock) end
+                                    if props.WheelSpeed and props.WheelSpeed ~= 40 then table.insert(propBatches.WheelSpeed, {spawnedBlock, props.WheelSpeed}) end
+                                    if props.WheelTorque and props.WheelTorque ~= 1000000 then table.insert(propBatches.WheelTorque, {spawnedBlock, props.WheelTorque}) end
+                                end
+                            end
+                        end
+                        threadsCompleted = threadsCompleted + 1
+                    end)
+                    
+                    if spawnDelayRate > 0 then task.wait(spawnDelayRate) else
+                        if i % spawnBatchSize == 0 then task.wait() end
+                    end
+                end
+
+                while threadsCompleted < totalExpected and autoBuilderModule.Enabled do task.wait() end
+                if not autoBuilderModule.Enabled then return end
+
+                if usePropToggle.Enabled and propTool then
+                    notify('AutoBuilder', 'Applying mechanical properties...', 5, 'info')
+                    getTool("PropertiesTool", true) 
+                end
+
+                local function fireProp(cat, batch, val)
+                    if #batch > 0 and usePropToggle.Enabled and propRF then 
+                        task.spawn(function() propRF:InvokeServer(cat, batch, val) end) 
+                    end
+                end
+
+                fireProp("Anchored", propBatches.Unanchor)
+                fireProp("Collision", propBatches.Uncollide)
+                fireProp("Cast shadow", propBatches.NoShadow)
+                fireProp("Aim", propBatches.Toggles.Aim)
+                fireProp("Reverse spin", propBatches.Toggles.ReverseSpin)
+
+                for step = 1, 4 do
+                    local transBatch = {}
+                    for targetStep = step, 4 do
+                        for _, b in ipairs(propBatches.Transparency[targetStep]) do table.insert(transBatch, b) end
+                    end
+                    fireProp("Transparency", transBatch)
+                end
+
+                for category, valueGroups in pairs(propBatches.Values) do
+                    for value, blockArray in pairs(valueGroups) do fireProp(category, blockArray, value) end
+                end
+
+                if #propBatches.WheelSpeed > 0 and usePropToggle.Enabled and propRF then
+                    local speedMap = {[40]=0, [30]=1, [20]=2, [10]=3, [5]=4, [4]=5, [3]=6, [2]=7, [1]=8, [0.5]=9, [50]=10}
+                    for _, data in ipairs(propBatches.WheelSpeed) do
+                        local fires = speedMap[data[2]] or 0
+                        for _ = 1, fires do task.spawn(function() propRF:InvokeServer("Wheel speed", {data[1]}) end) end
+                    end
+                end
+
+                if #propBatches.WheelTorque > 0 and usePropToggle.Enabled and propRF then
+                    for _, data in ipairs(propBatches.WheelTorque) do
+                        local fires = 0
+                        if data[2] == 10000000 then fires = 1 elseif data[2] == 100000000 then fires = 2 elseif data[2] == 1000000000 then fires = 3 elseif data[2] == 10000000000 then fires = 4 end
+                        for _ = 1, fires do task.spawn(function() propRF:InvokeServer("Wheel torque", {data[1]}) end) end
+                    end
+                end
+                
+                if usePropToggle.Enabled and propTool then getTool("PropertiesTool", false) end
+
+                if paintTool and #paintArgs > 0 and usePaintToggle.Enabled then
+                    notify('AutoBuilder', 'Painting structures...', 5, 'info')
+                    task.spawn(function() paintTool:WaitForChild("RF"):InvokeServer(paintArgs) end)
+                end
+
+                notify('AutoBuilder', '✅ Build Complete!', 5, 'info')
+                autoBuilderModule:Toggle()
+            end)
+        end
+    })
+
+    autoBuilderModule:CreateButton({
+        Name = 'Check Missing Blocks',
+        Function = function()
+            local targetFile = fileDropdown.Value
+            if not targetFile or targetFile == "" then targetFile = "build.txt" end
+            if not isfile(targetFile) then notify('Error', 'File not found: ' .. targetFile, 5, 'alert') return end
+            
+            local suc, rawData = pcall(function() return HttpService:JSONDecode(readfile(targetFile)) end)
+            if not suc then notify('Error', 'Failed to decode JSON data.', 5, 'alert') return end
+
+            local buildData = normalizeBuildData(rawData)
+            local fallbacks = parseRedundancy(redundancyTextBox.Value)
+            local consumedTracker = {}
+            local missingDetails = {}
+            local totalMissing = 0
+            local totalRequired = #buildData
+
+            local function getBestFallback()
+                local best, maxAmt = nil, 0
+                for _, fb in ipairs(fallbacks) do
+                    local amt = getCount(fb) - (consumedTracker[fb] or 0)
+                    if amt > maxAmt then maxAmt = amt; best = fb end
+                end
+                return best
+            end
+
+            for i, d in ipairs(buildData) do
+                local t = d.Type
+                consumedTracker[t] = (consumedTracker[t] or 0) + 1
+                
+                if consumedTracker[t] > getCount(t) then
+                    local bestFB = getBestFallback()
+                    if bestFB then
+                        consumedTracker[bestFB] = (consumedTracker[bestFB] or 0) + 1
+                        consumedTracker[t] = consumedTracker[t] - 1 
+                    else
+                        missingDetails[t] = (missingDetails[t] or 0) + 1
+                        totalMissing = totalMissing + 1
+                    end
+                end
+            end
+
+            if totalMissing == 0 then
+                notify('Block Check', '✅ You have all ' .. totalRequired .. ' required items!', 5, 'info')
+            else
+                local missingStr = ""
+                local dispCount = 0
+                for bType, amt in pairs(missingDetails) do
+                    missingStr = missingStr .. amt .. "x " .. bType .. ", "
+                    dispCount = dispCount + 1
+                    if dispCount >= 4 then break end
+                end
+                missingStr = missingStr:sub(1, -3)
+                if totalMissing > 4 then missingStr = missingStr .. " and more..." end
+                notify('Missing Items', "Missing " .. totalMissing .. " out of " .. totalRequired .. " items.\nMissing: " .. missingStr, 15, 'warning')
+            end
+        end
+    })
+
+    redundancyTextBox = autoBuilderModule:CreateTextBox({ Name = 'Fallback Blocks (Comma Separated)', Default = "", Tooltip = "Example: WoodBlock, TitaniumBlock. Uses these if you run out of required blocks.", Function = function() end})
+    buildSpeedSlider = autoBuilderModule:CreateSlider({ Name = 'Spawn Speed', Min = 100, Max = 1000, Default = 250, Function = function() end })
+    maxModeToggle = autoBuilderModule:CreateToggle({ Name = 'Max Mode', Default = false, Function = function(val) if val then notify('Warning', 'Max Mode can cause severe lag or crash your game!', 5, 'alert') end end, Tooltip = 'Spawns everything instantly without waiting.'})
+
+    useScaleToggle = autoBuilderModule:CreateToggle({ Name = 'Use Scale Tool', Default = true, Function = function() end })
+    usePaintToggle = autoBuilderModule:CreateToggle({ Name = 'Use Paint Tool', Default = true, Function = function() end })
+    usePropToggle = autoBuilderModule:CreateToggle({ Name = 'Use Property Tool', Default = true, Function = function() end })
 
 end)
 
