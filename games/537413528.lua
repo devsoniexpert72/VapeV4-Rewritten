@@ -3094,12 +3094,6 @@ end)
 
 
 
-
-
-
-
-
-
 run(function()
     local vape = shared.vape
     if not vape then return end
@@ -3131,6 +3125,7 @@ run(function()
         return Color3.fromRGB(163, 162, 165), Enum.Material.Plastic
     end
 
+    -- Pre-declare all UI variables so the functions can safely access them
     local terrainModule
     local gridXSlider, gridZSlider, sizeSlider, heightSlider, scaleSlider
     local octavesSlider, persistenceSlider, curveSlider, thicknessSlider
@@ -3148,7 +3143,18 @@ run(function()
         local t = tostring(lp.Team)
         local p = "WhiteZone"
         if t=="red" then p="Really redZone" elseif t=="blue" then p="Really blueZone" elseif t=="black" then p="BlackZone" elseif t=="yellow" then p="New YellerZone" elseif t=="magenta" then p="MagentaZone" elseif t=="green" then p="CamoZone" end
-        return workspace:FindFirstChild(p)
+        
+        local zone = workspace:FindFirstChild(p)
+        -- Fallback: If standard name fails, search for any Zone part near the player
+        if not zone then
+            for _, v in ipairs(workspace:GetChildren()) do
+                if v:IsA("Part") and string.find(v.Name, "Zone") then
+                    zone = v
+                    break
+                end
+            end
+        end
+        return zone
     end
 
     local function parseRedundancy(text)
@@ -3167,15 +3173,16 @@ run(function()
     -- PROCEDURAL MATH & BIOME ENGINE
     -- =========================================================================
     local function getNoiseData(x, z)
-        local scale = scaleSlider.Value 
-        local octaves = octavesSlider.Value
-        local persistence = persistenceSlider.Value / 100
+        local scale = scaleSlider and scaleSlider.Value or 150
+        local octaves = octavesSlider and octavesSlider.Value or 2
+        local persistence = (persistenceSlider and persistenceSlider.Value or 40) / 100
+        local exponent = (curveSlider and curveSlider.Value or 15) / 10
+        local heightMultiplier = heightSlider and heightSlider.Value or 60
         local lacunarity = 2.0
-        local exponent = curveSlider.Value / 10
-        local heightMultiplier = heightSlider.Value
 
         local total, maxValue, amplitude, frequency = 0, 0, 1, 1 / scale
-        local nx, nz = x + offXSlider.Value, z + offZSlider.Value
+        local nx = x + (offXSlider and offXSlider.Value or 0)
+        local nz = z + (offZSlider and offZSlider.Value or 0)
 
         for i = 1, octaves do
             local noiseVal = math.noise(nx * frequency, nz * frequency, 1337) + 0.5
@@ -3199,11 +3206,11 @@ run(function()
     end
 
     -- =========================================================================
-    -- MAX OPTIMIZE & SECANT PROJECTION ALGORITHM
+    -- SECANT PROJECTION & HOLLOW EXTRUSION ALGORITHM
     -- =========================================================================
     local function generateMeshedTerrainData()
         cachedTerrainData = {}
-        local sizeMult = sizeSlider.Value / 10
+        local sizeMult = (sizeSlider.Value) / 10
         local defaultThickness = thicknessSlider.Value
         local isVoxel = voxelToggle.Enabled
         local isMaxOpt = maxOptToggle.Enabled
@@ -3216,17 +3223,16 @@ run(function()
 
         local baseColorPreview, baseMaterialPreview = getBlockAppearance(blockDropdown.Value)
 
-        -- Pass 1: Pre-calculate Heightmap and Norms for neighbor detection
         local mapHeights = {}
         local mapNorms = {}
         for x = 0, gridX + 1 do
             mapHeights[x] = {}
+            mapNorms[x] = {}
             for z = 0, gridZ + 1 do
                 mapHeights[x][z], mapNorms[x][z] = getNoiseData(x * sizeMult, z * sizeMult)
             end
         end
 
-        -- Pass 2: Generate Grid with Smart Extrusion & Trig Gap Fix
         local rawGrid = {}
         for x = 1, gridX do
             rawGrid[x] = {}
@@ -3234,13 +3240,11 @@ run(function()
                 local rawHeight = mapHeights[x][z]
                 local normHeight = mapNorms[x][z]
                 
-                -- Detect lowest neighbor for Smart Shell Extrusion
                 local minNeighbor = math.min(
                     mapHeights[x-1][z], mapHeights[x+1][z],
                     mapHeights[x][z-1], mapHeights[x][z+1]
                 )
                 
-                -- Smart Thickness: Flat areas = 0.5 thin panel. Cliffs = stretch down exactly to the lowest neighbor + overlap margin.
                 local reqThickness = isMaxOpt and math.max(0.5, (rawHeight - minNeighbor) + (sizeMult * 0.5)) or defaultThickness
 
                 local finalY, right, up, look
@@ -3265,11 +3269,8 @@ run(function()
             end
         end
 
-        -- Pass 3: Greedy Meshing
         local function areBlocksEqual(b1, b2)
             local epsilon = 0.001
-            -- If we are in Max Optimize mode, we can merge blocks with different required thicknesses, 
-            -- we will just apply the MAXIMUM thickness required by the group to the whole merged chunk.
             return math.abs(b1.y - b2.y) < epsilon and (b1.u - b2.u).Magnitude < epsilon and b1.color == b2.color
         end
 
@@ -3302,13 +3303,10 @@ run(function()
                     local centerX = (x + (w - 1) / 2) * sizeMult - halfW
                     local centerZ = (z + (d - 1) / 2) * sizeMult - halfD
                     
-                    -- TRIGONOMETRIC GAP COMPENSATION (Secant Stretch)
-                    -- If the slope is steep, the horizontal cross-section shrinks. We scale the local axes to fill the footprint exactly.
                     local slopeStretch = isVoxel and 1 or (1 / math.clamp(startBlock.u.Y, 0.1, 1.0))
                     local finalSizeX = w * sizeMult * slopeStretch
                     local finalSizeZ = d * sizeMult * slopeStretch
 
-                    -- The top face is positioned perfectly on the math curve. We shift the pivot down by exactly half its thickness.
                     local basePos = Vector3.new(centerX, startBlock.y, centerZ)
                     local shiftedPos = basePos - (startBlock.u * (maxChunkThickness / 2))
 
@@ -3325,63 +3323,70 @@ run(function()
     end
 
     -- =========================================================================
-    -- REALISTIC PREVIEW & INVENTORY CHECK
+    -- SAFE EXECUTION WRAPPER & INVENTORY LOGIC
     -- =========================================================================
     local function renderPreview()
-        generateMeshedTerrainData()
-        if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
-        
-        local previewFolder = Instance.new("Folder")
-        previewFolder.Name = previewFolderName
-        previewFolder.Parent = workspace
-
-        local plotZone = getPlotZone()
-        if not plotZone then return end
-        
-        local sizeMult = sizeSlider.Value / 10
-        local surfaceY = (plotZone.Size.Y / 2) + (sizeMult / 2)
-        local baseCF = plotZone.CFrame * CFrame.new(0, surfaceY, 0)
-
-        for _, blockData in ipairs(cachedTerrainData) do
-            local ghost = Instance.new("Part")
-            ghost.Anchored = true
-            ghost.CanCollide = false
-            ghost.Transparency = 0.2
-            ghost.Color = blockData.color
-            ghost.Material = blockData.mat
-            ghost.Size = blockData.size
+        local success, err = pcall(function()
+            generateMeshedTerrainData()
+            if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
             
-            local localRotCF = CFrame.fromMatrix(blockData.pos, blockData.r, blockData.u, blockData.b)
-            ghost.CFrame = baseCF:ToWorldSpace(localRotCF)
-            ghost.Parent = previewFolder
-        end
-        
-        -- INVENTORY WARNING SYSTEM
-        local totalNeeded = #cachedTerrainData
-        local fallbacks = parseRedundancy(fallbackBox.Value)
-        local totalOwned = getCount(blockDropdown.Value)
-        for _, fb in ipairs(fallbacks) do totalOwned = totalOwned + getCount(fb) end
+            local previewFolder = Instance.new("Folder")
+            previewFolder.Name = previewFolderName
+            previewFolder.Parent = workspace
 
-        if totalNeeded > totalOwned then
-            notify('⚠️ Inventory Warning', 'You need ' .. totalNeeded .. ' blocks, but only own ' .. totalOwned .. '! Build will fail midway.', 15, 'alert')
-        else
-            local totalRaw = gridXSlider.Value * gridZSlider.Value
-            notify('Preview Ready', 'MaxOptimize meshed ' .. totalRaw .. ' cells into ' .. totalNeeded .. ' parts. (You own ' .. totalOwned .. ' parts).', 10, 'info')
+            local plotZone = getPlotZone()
+            if not plotZone then
+                error("Could not locate your Plot Zone. Are you spawned in?")
+            end
+            
+            local sizeMult = sizeSlider.Value / 10
+            local surfaceY = (plotZone.Size.Y / 2) + (sizeMult / 2)
+            local baseCF = plotZone.CFrame * CFrame.new(0, surfaceY, 0)
+
+            for _, blockData in ipairs(cachedTerrainData) do
+                local ghost = Instance.new("Part")
+                ghost.Anchored = true
+                ghost.CanCollide = false
+                ghost.Transparency = 0.2
+                ghost.Color = blockData.color
+                ghost.Material = blockData.mat
+                ghost.Size = blockData.size
+                
+                local localRotCF = CFrame.fromMatrix(blockData.pos, blockData.r, blockData.u, blockData.b)
+                ghost.CFrame = baseCF:ToWorldSpace(localRotCF)
+                ghost.Parent = previewFolder
+            end
+            
+            local totalNeeded = #cachedTerrainData
+            local fallbacks = parseRedundancy(fallbackBox.Value)
+            local totalOwned = getCount(blockDropdown.Value)
+            for _, fb in ipairs(fallbacks) do totalOwned = totalOwned + getCount(fb) end
+
+            if totalNeeded > totalOwned then
+                notify('Inventory Warning', 'Requires ' .. totalNeeded .. ' parts, but you only own ' .. totalOwned .. '.', 10, 'warning')
+            else
+                notify('Preview Generated', 'Meshed into ' .. totalNeeded .. ' optimized parts. (Inventory: ' .. totalOwned .. ')', 8, 'info')
+            end
+        end)
+
+        if not success then
+            notify('Preview Error', tostring(err), 10, 'alert')
+            warn("TerrainGen Error:", err)
         end
     end
 
     -- =========================================================================
-    -- MAIN BUILDER MODULE
+    -- MODULE & UI INITIALIZATION (ORDER MATTERS)
     -- =========================================================================
     terrainModule = vape.Categories['BABFT Tools']:CreateModule({
         Name = 'TerrainGen',
-        Tooltip = 'Procedurally generates Max-Optimized 3D terrain with Hollow Extrusion and Secant Gap-Fixing.',
+        Tooltip = 'Procedurally generates 3D terrain. Always preview before building.',
         Function = function(callback)
             if not callback then return end
             
             task.spawn(function()
                 if #cachedTerrainData == 0 then
-                    notify('Error', 'Generate a preview first!', 5, 'alert')
+                    notify('Build Error', 'You must generate a preview before building.', 5, 'alert')
                     terrainModule:Toggle()
                     return
                 end
@@ -3398,7 +3403,7 @@ run(function()
                 local paintTool = biomeToggle.Enabled and getTool("PaintingTool") or nil
 
                 if not buildTool or not scaleTool then
-                    notify('Error', 'Missing Building or Scaling tool.', 5, 'alert')
+                    notify('Build Error', 'Missing Building or Scaling tool in inventory.', 5, 'alert')
                     terrainModule:Toggle() return
                 end
 
@@ -3429,7 +3434,7 @@ run(function()
                 end
 
                 pcall(function() workspace:WaitForChild("InstaLoadFunction", 1):InvokeServer() end)
-                notify('TerrainGen', 'Building optimized terrain... (' .. totalNeeded .. ' parts)', 5, 'info')
+                notify('TerrainGen', 'Initiating build sequence for ' .. totalNeeded .. ' parts.', 5, 'info')
 
                 local spawnDelayRate = 1 / speedSlider.Value
                 local spawnBatchSize = math.max(1, math.ceil(0.015 / spawnDelayRate))
@@ -3453,7 +3458,7 @@ run(function()
 
                     local currentBlockType = getValidBlock()
                     if not currentBlockType then
-                        notify('❌ Build Failed', 'Out of blocks! Built ' .. (i-1) .. '/' .. totalNeeded .. '.', 10, 'alert')
+                        notify('Build Interrupted', 'Out of blocks! Built ' .. (i-1) .. ' of ' .. totalNeeded .. '.', 10, 'alert')
                         break
                     end
 
@@ -3496,60 +3501,56 @@ run(function()
                 while threadsCompleted < totalNeeded and terrainModule.Enabled do task.wait() end
                 
                 if biomeToggle.Enabled and paintTool and #paintArgs > 0 and terrainModule.Enabled then
-                    notify('Painting', 'Applying Biome Colors...', 5, 'info')
+                    notify('Painting', 'Applying biome color palette...', 5, 'info')
                     task.spawn(function() paintTool:WaitForChild("RF"):InvokeServer(paintArgs) end)
                 end
 
-                if terrainModule.Enabled then notify('TerrainGen', '✅ Terrain Build Complete!', 5, 'info') end
+                if terrainModule.Enabled then notify('TerrainGen', 'Build complete.', 5, 'info') end
                 terrainModule:Toggle()
             end)
         end
     })
 
-    -- =========================================================================
-    -- UI COMPONENTS & BUTTONS
-    -- =========================================================================
-    terrainModule:CreateButton({ Name = 'Preview Hologram & Check Inventory', Function = renderPreview })
+    -- UI CREATION: Sliders & Toggles must be created FIRST so the button functions can read them safely
+    gridXSlider = terrainModule:CreateSlider({ Name = 'Grid X (Width)', Min = 10, Max = 100, Default = 40, Tooltip = "The horizontal X-axis width of the terrain grid.", Function = function() end })
+    gridZSlider = terrainModule:CreateSlider({ Name = 'Grid Z (Depth)', Min = 10, Max = 100, Default = 40, Tooltip = "The horizontal Z-axis depth of the terrain grid.", Function = function() end })
+    sizeSlider = terrainModule:CreateSlider({ Name = 'Base Scale Limit (x10)', Min = 1, Max = 100, Default = 20, Tooltip = "Size of a single unmerged grid segment. 20 equals 2x2x2 studs." })
+    
+    heightSlider = terrainModule:CreateSlider({ Name = 'Mountain Height Max', Min = 1, Max = 300, Default = 60, Tooltip = "The maximum vertical height limit for the highest terrain peaks.", Function = function() end })
+    scaleSlider = terrainModule:CreateSlider({ Name = 'Terrain Smoothness', Min = 10, Max = 500, Default = 150, Tooltip = "Stretches the noise. Higher values create smooth rolling hills; lower creates chaotic spikes." })
+    curveSlider = terrainModule:CreateSlider({ Name = 'Valley Exponent (x10)', Min = 1, Max = 50, Default = 15, Tooltip = "Mathematical exponent. Values above 10 flatten valleys and sharpen peaks." })
+    
+    octavesSlider = terrainModule:CreateSlider({ Name = 'Octaves (Detail Layers)', Min = 1, Max = 6, Default = 2, Tooltip = "Number of layered noise passes. More layers add fine, rocky details." })
+    persistenceSlider = terrainModule:CreateSlider({ Name = 'Persistence (Roughness %)', Min = 1, Max = 100, Default = 40, Tooltip = "How strongly the detail layers affect the primary terrain shape." })
+
+    offXSlider = terrainModule:CreateSlider({ Name = 'Seed Offset X', Min = -10000, Max = 10000, Default = 0, Tooltip = "Shifts the terrain infinitely in the X direction.", Function = function() end })
+    offZSlider = terrainModule:CreateSlider({ Name = 'Seed Offset Z', Min = -10000, Max = 10000, Default = 0, Tooltip = "Shifts the terrain infinitely in the Z direction.", Function = function() end })
+
+    maxOptToggle = terrainModule:CreateToggle({ Name = 'Max Optimize (Smart Extrusion)', Default = true, Tooltip = "Calculates precise structural thickness. Hollows out plains and seals cliffs to save massive amounts of inventory." })
+    thicknessSlider = terrainModule:CreateSlider({ Name = 'Manual Thickness', Min = 0, Max = 200, Default = 30, Tooltip = "Fixed downward thickness of blocks. Only used if Max Optimize is disabled." })
+
+    biomeToggle = terrainModule:CreateToggle({ Name = 'Enable Biome Painting', Default = true, Tooltip = "Automatically paints water, sand, grass, stone, and snow based on altitude." })
+    voxelToggle = terrainModule:CreateToggle({ Name = 'Voxel Mode (Minecraft)', Default = false, Tooltip = "Forces rigid, flat block placement like Minecraft, bypassing angled slopes." })
+    
+    blockDropdown = terrainModule:CreateDropdown({ Name = 'Primary Block Type', List = getAvailableBlocks(), Tooltip = "The main block material used to construct the terrain.", Function = function() end})
+    fallbackBox = terrainModule:CreateTextBox({ Name = 'Fallback Blocks', Default = "PlasticBlock, WoodBlock", Tooltip = "Comma-separated blocks to use if you run out of the primary block type." })
+    
+    speedSlider = terrainModule:CreateSlider({ Name = 'Placement Speed', Min = 100, Max = 1000, Default = 500, Tooltip = "Speed at which blocks are sent to the server.", Function = function() end })
+    maxModeToggle = terrainModule:CreateToggle({ Name = 'Bypass Speed Limits', Default = false, Tooltip = "Sends placement requests instantly. May cause server lag or disconnects." })
+
+    -- BUTTONS CREATED LAST: Ensures all referenced UI components fully exist in memory
+    terrainModule:CreateButton({ Name = 'Preview Hologram', Function = renderPreview, Tooltip = "Calculates the procedural mesh and renders a ghost hologram on your plot." })
     terrainModule:CreateButton({
-        Name = 'Clear Preview',
+        Name = 'Clear Hologram',
+        Tooltip = "Deletes the current terrain preview.",
         Function = function()
             if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
             cachedTerrainData = {}
-            notify('Cleared', 'Terrain preview cleared.', 3, 'info')
+            notify('Cleared', 'Terrain preview removed.', 3, 'info')
         end
     })
 
-    gridXSlider = terrainModule:CreateSlider({ Name = 'Grid X (Width)', Min = 10, Max = 100, Default = 40, Function = function() end })
-    gridZSlider = terrainModule:CreateSlider({ Name = 'Grid Z (Depth)', Min = 10, Max = 100, Default = 40, Function = function() end })
-    sizeSlider = terrainModule:CreateSlider({ Name = 'Base Block Scale (x10)', Min = 1, Max = 100, Default = 20 })
-    
-    maxOptToggle = terrainModule:CreateToggle({ Name = 'Max Optimize (Smart Hollow Extrusion)', Default = true, Tooltip = "Makes plains paper-thin and stretches cliffs perfectly. Saves thousands of parts." })
-    thicknessSlider = terrainModule:CreateSlider({ Name = 'Manual Thickness (If MaxOpt is OFF)', Min = 0, Max = 200, Default = 30 })
-
-    heightSlider = terrainModule:CreateSlider({ Name = 'Mountain Height Max', Min = 1, Max = 300, Default = 60, Function = function() end })
-    scaleSlider = terrainModule:CreateSlider({ Name = 'Terrain Smoothness', Min = 10, Max = 500, Default = 150 })
-    curveSlider = terrainModule:CreateSlider({ Name = 'Valley Exponent (x10)', Min = 1, Max = 50, Default = 15 })
-    
-    octavesSlider = terrainModule:CreateSlider({ Name = 'Octaves (Detail Layers)', Min = 1, Max = 6, Default = 2 })
-    persistenceSlider = terrainModule:CreateSlider({ Name = 'Persistence (Roughness %)', Min = 1, Max = 100, Default = 40 })
-
-    offXSlider = terrainModule:CreateSlider({ Name = 'Seed Offset X', Min = -10000, Max = 10000, Default = 0, Function = function() end })
-    offZSlider = terrainModule:CreateSlider({ Name = 'Seed Offset Z', Min = -10000, Max = 10000, Default = 0, Function = function() end })
-
-    biomeToggle = terrainModule:CreateToggle({ Name = 'Enable Biome Painting', Default = true })
-    voxelToggle = terrainModule:CreateToggle({ Name = 'Voxel Mode (Minecraft)', Default = false })
-    
-    blockDropdown = terrainModule:CreateDropdown({ Name = 'Base Block', List = getAvailableBlocks(), Function = function() end})
-    fallbackBox = terrainModule:CreateTextBox({ Name = 'Fallbacks', Default = "PlasticBlock, WoodBlock" })
-    
-    speedSlider = terrainModule:CreateSlider({ Name = 'Spawn Speed', Min = 100, Max = 1000, Default = 500, Function = function() end })
-    maxModeToggle = terrainModule:CreateToggle({ Name = 'Max Mode', Default = false })
-
 end)
-
-
-
-
 
 
 
