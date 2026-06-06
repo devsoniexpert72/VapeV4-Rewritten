@@ -3346,8 +3346,8 @@ run(function()
             for _, blockData in ipairs(cachedTerrainData) do
                 local ghost = Instance.new("Part")
                 ghost.Anchored = true
-                ghost.CanCollide = false
-                ghost.Transparency = 0.2
+                ghost.CanCollide = true
+                ghost.Transparency = 0
                 ghost.Color = blockData.color
                 ghost.Material = blockData.mat
                 ghost.Size = blockData.size
