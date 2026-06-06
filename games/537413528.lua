@@ -3103,7 +3103,6 @@ end)
 
 
 
-
 run(function()
     local vape = shared.vape
     if not vape then return end
@@ -3132,13 +3131,13 @@ run(function()
                 return block.Color, block.Material
             end
         end
-        return Color3.fromRGB(163, 162, 165), Enum.Material.Plastic -- Fallback
+        return Color3.fromRGB(163, 162, 165), Enum.Material.Plastic
     end
 
     local terrainModule
     local gridXSlider, gridZSlider, sizeSlider, heightSlider, scaleSlider
-    local octavesSlider, persistenceSlider, curveSlider
-    local offXSlider, offZSlider, voxelToggle, maxModeToggle
+    local octavesSlider, persistenceSlider, curveSlider, thicknessSlider
+    local offXSlider, offZSlider, voxelToggle, maxModeToggle, biomeToggle
     local blockDropdown, fallbackBox, speedSlider
     
     local previewFolderName = "Terrain_Preview_Hologram"
@@ -3168,9 +3167,9 @@ run(function()
     end
 
     -- =========================================================================
-    -- PROCEDURAL MATH ENGINE (FBM PERLIN NOISE)
+    -- PROCEDURAL MATH & BIOME ENGINE
     -- =========================================================================
-    local function getNoiseHeight(x, z)
+    local function getNoiseData(x, z)
         local scale = scaleSlider.Value 
         local octaves = octavesSlider.Value
         local persistence = persistenceSlider.Value / 100
@@ -3197,14 +3196,15 @@ run(function()
         local normalizedHeight = total / maxValue
         normalizedHeight = math.pow(normalizedHeight, exponent)
 
-        return normalizedHeight * heightMultiplier
+        -- Return the final scale Y, AND the pure 0-1 norm for Biome calculations
+        return normalizedHeight * heightMultiplier, normalizedHeight
     end
 
     local function calculateSurfaceNormal(x, z, step)
-        local hL = getNoiseHeight(x - step, z)
-        local hR = getNoiseHeight(x + step, z)
-        local hD = getNoiseHeight(x, z - step)
-        local hU = getNoiseHeight(x, z + step)
+        local hL = getNoiseData(x - step, z)
+        local hR = getNoiseData(x + step, z)
+        local hD = getNoiseData(x, z - step)
+        local hU = getNoiseData(x, z + step)
 
         local dX = Vector3.new(step * 2, hR - hL, 0)
         local dZ = Vector3.new(0, hU - hD, step * 2)
@@ -3212,29 +3212,51 @@ run(function()
         return dZ:Cross(dX).Unit
     end
 
+    local function getBiomeColor(normHeight)
+        -- Dynamic thresholds based on fractal height
+        if normHeight <= 0.15 then
+            return Color3.fromRGB(43, 101, 175) -- Deep Water
+        elseif normHeight <= 0.22 then
+            return Color3.fromRGB(75, 151, 229) -- Shallow Water
+        elseif normHeight <= 0.28 then
+            return Color3.fromRGB(244, 232, 137) -- Sand
+        elseif normHeight <= 0.55 then
+            return Color3.fromRGB(85, 170, 127) -- Grass
+        elseif normHeight <= 0.75 then
+            return Color3.fromRGB(130, 130, 130) -- Rock/Stone
+        else
+            return Color3.fromRGB(245, 245, 245) -- Snow Peak
+        end
+    end
+
     -- =========================================================================
-    -- GREEDY MESHING ALGORITHM (OPTIMIZATION)
+    -- GREEDY MESHING & GAP EXTRUSION ALGORITHM
     -- =========================================================================
     local function generateMeshedTerrainData()
         cachedTerrainData = {}
         local sizeMult = sizeSlider.Value / 10
+        local thickness = thicknessSlider.Value -- The downward stretch
         local isVoxel = voxelToggle.Enabled
+        local useBiomes = biomeToggle.Enabled
+        
         local gridX = gridXSlider.Value
         local gridZ = gridZSlider.Value
         local halfW = (gridX * sizeMult) / 2
         local halfD = (gridZ * sizeMult) / 2
 
-        -- Step 1: Generate Raw Grid
+        local baseColorPreview, baseMaterialPreview = getBlockAppearance(blockDropdown.Value)
+
+        -- Step 1: Generate Raw Data Matrix
         local rawGrid = {}
         for x = 1, gridX do
             rawGrid[x] = {}
             for z = 1, gridZ do
                 local worldX = x * sizeMult
                 local worldZ = z * sizeMult
-                local rawHeight = getNoiseHeight(worldX, worldZ)
-
+                
+                local rawHeight, normHeight = getNoiseData(worldX, worldZ)
                 local finalY, right, up, look
-
+                
                 if isVoxel then
                     finalY = math.floor(rawHeight / sizeMult) * sizeMult
                     up = Vector3.new(0, 1, 0)
@@ -3247,14 +3269,22 @@ run(function()
                     finalY = rawHeight
                 end
 
-                rawGrid[x][z] = { y = finalY, r = right, u = up, l = look, meshed = false }
+                local blockColor = useBiomes and getBiomeColor(normHeight) or baseColorPreview
+
+                rawGrid[x][z] = { 
+                    y = finalY, r = right, u = up, l = look, 
+                    color = blockColor, 
+                    meshed = false 
+                }
             end
         end
 
-        -- Step 2: Mesh identical adjacent blocks
+        -- Step 2: Mesh blocks matching in height, angle, AND color
         local function areBlocksEqual(b1, b2)
             local epsilon = 0.001
-            return math.abs(b1.y - b2.y) < epsilon and (b1.u - b2.u).Magnitude < epsilon
+            return math.abs(b1.y - b2.y) < epsilon 
+               and (b1.u - b2.u).Magnitude < epsilon 
+               and b1.color == b2.color
         end
 
         for x = 1, gridX do
@@ -3263,12 +3293,12 @@ run(function()
                     local startBlock = rawGrid[x][z]
                     local w, d = 1, 1
 
-                    -- Expand X Width
+                    -- X-Axis Expansion
                     while x + w <= gridX and not rawGrid[x + w][z].meshed and areBlocksEqual(startBlock, rawGrid[x + w][z]) do
                         w = w + 1
                     end
 
-                    -- Expand Z Depth
+                    -- Z-Axis Expansion
                     local canExpandZ = true
                     while z + d <= gridZ and canExpandZ do
                         for testX = 0, w - 1 do
@@ -3280,21 +3310,29 @@ run(function()
                         if canExpandZ then d = d + 1 end
                     end
 
-                    -- Mark region as meshed
+                    -- Mark mapped region
                     for ix = 0, w - 1 do
                         for iz = 0, d - 1 do
                             rawGrid[x + ix][z + iz].meshed = true
                         end
                     end
 
-                    -- Calculate center of merged block
                     local centerX = (x + (w - 1) / 2) * sizeMult - halfW
                     local centerZ = (z + (d - 1) / 2) * sizeMult - halfD
+                    
+                    -- Gap Filling Math: Stretch the total Y size, and shift the block downwards by half of the added thickness
+                    local totalHeight = sizeMult + thickness
+                    local downShift = (totalHeight - sizeMult) / 2
+                    
+                    local basePos = Vector3.new(centerX, startBlock.y, centerZ)
+                    local shiftedPos = basePos - (startBlock.u * downShift)
 
                     table.insert(cachedTerrainData, {
-                        pos = Vector3.new(centerX, startBlock.y, centerZ),
-                        size = Vector3.new(w * sizeMult, sizeMult, d * sizeMult),
-                        r = startBlock.r, u = startBlock.u, b = -startBlock.l
+                        pos = shiftedPos,
+                        size = Vector3.new(w * sizeMult, totalHeight, d * sizeMult),
+                        r = startBlock.r, u = startBlock.u, b = -startBlock.l,
+                        color = startBlock.color,
+                        mat = useBiomes and Enum.Material.SmoothPlastic or baseMaterialPreview
                     })
                 end
             end
@@ -3318,17 +3356,14 @@ run(function()
         local sizeMult = sizeSlider.Value / 10
         local surfaceY = (plotZone.Size.Y / 2) + (sizeMult / 2)
         local baseCF = plotZone.CFrame * CFrame.new(0, surfaceY, 0)
-        
-        -- Get actual visual data for hologram
-        local previewColor, previewMaterial = getBlockAppearance(blockDropdown.Value)
 
         for _, blockData in ipairs(cachedTerrainData) do
             local ghost = Instance.new("Part")
             ghost.Anchored = true
             ghost.CanCollide = false
-            ghost.Transparency = 0.4
-            ghost.Color = previewColor
-            ghost.Material = previewMaterial
+            ghost.Transparency = 0.2 -- More solid to see biome colors clearly
+            ghost.Color = blockData.color
+            ghost.Material = blockData.mat
             ghost.Size = blockData.size
             
             local localRotCF = CFrame.fromMatrix(blockData.pos, blockData.r, blockData.u, blockData.b)
@@ -3345,7 +3380,7 @@ run(function()
     -- =========================================================================
     terrainModule = vape.Categories['BABFT Tools']:CreateModule({
         Name = 'TerrainGen',
-        Tooltip = 'Procedurally generates optimized 3D terrain using greedy meshing.',
+        Tooltip = 'Procedurally generates optimized 3D terrain with Biome Painting and Gap Extrusion.',
         Function = function(callback)
             if not callback then return end
             
@@ -3365,10 +3400,15 @@ run(function()
 
                 local buildTool = getTool("BuildingTool")
                 local scaleTool = getTool("ScalingTool")
+                local paintTool = biomeToggle.Enabled and getTool("PaintingTool") or nil
 
                 if not buildTool or not scaleTool then
-                    notify('Error', 'Missing required tools (Build, Scale).', 5, 'alert')
+                    notify('Error', 'Missing Building or Scaling tool.', 5, 'alert')
                     terrainModule:Toggle() return
+                end
+                
+                if biomeToggle.Enabled and not paintTool then
+                    notify('Warning', 'Painting Tool missing. Terrain will not be colored.', 5, 'alert')
                 end
 
                 local buildRF = buildTool:WaitForChild("RF")
@@ -3408,6 +3448,7 @@ run(function()
                 local sizeMult = sizeSlider.Value / 10
                 local surfaceY = (plotZone.Size.Y / 2) + (sizeMult / 2)
                 local baseCF = plotZone.CFrame * CFrame.new(0, surfaceY, 0)
+                local paintArgs = {}
 
                 local unprocessedBlocks = {}
                 local blockAddedConn = playerBlocksFolder.ChildAdded:Connect(function(b)
@@ -3450,8 +3491,10 @@ run(function()
                         end
                         
                         if spawnedBlock and terrainModule.Enabled then
-                            -- Pass the highly optimized dynamic size instead of a flat cube
                             task.spawn(function() scaleRF:InvokeServer(spawnedBlock, blockData.size, absoluteTargetCFrame) end)
+                            if biomeToggle.Enabled then
+                                table.insert(paintArgs, {spawnedBlock, blockData.color})
+                            end
                         end
                         threadsCompleted = threadsCompleted + 1
                     end)
@@ -3463,6 +3506,11 @@ run(function()
 
                 while threadsCompleted < totalNeeded and terrainModule.Enabled do task.wait() end
                 
+                if biomeToggle.Enabled and paintTool and #paintArgs > 0 and terrainModule.Enabled then
+                    notify('Painting', 'Applying Biome Colors...', 5, 'info')
+                    task.spawn(function() paintTool:WaitForChild("RF"):InvokeServer(paintArgs) end)
+                end
+
                 notify('TerrainGen', '✅ Terrain Build Complete!', 5, 'info')
                 terrainModule:Toggle()
             end)
@@ -3482,11 +3530,12 @@ run(function()
         end
     })
 
-    gridXSlider = terrainModule:CreateSlider({ Name = 'Grid X (Width)', Min = 10, Max = 100, Default = 30, Function = function() end })
-    gridZSlider = terrainModule:CreateSlider({ Name = 'Grid Z (Depth)', Min = 10, Max = 100, Default = 30, Function = function() end })
-    sizeSlider = terrainModule:CreateSlider({ Name = 'Base Scale Limit (x10)', Min = 1, Max = 100, Default = 20, Tooltip = "Thickness/Base size of individual sections." })
+    gridXSlider = terrainModule:CreateSlider({ Name = 'Grid X (Width)', Min = 10, Max = 100, Default = 40, Function = function() end })
+    gridZSlider = terrainModule:CreateSlider({ Name = 'Grid Z (Depth)', Min = 10, Max = 100, Default = 40, Function = function() end })
+    sizeSlider = terrainModule:CreateSlider({ Name = 'Base Block Scale (x10)', Min = 1, Max = 100, Default = 20 })
+    thicknessSlider = terrainModule:CreateSlider({ Name = 'Crust Thickness (Gap Fill)', Min = 0, Max = 200, Default = 30, Tooltip = "Stretches blocks downward to fix gaps on steep mountains." })
 
-    heightSlider = terrainModule:CreateSlider({ Name = 'Mountain Height Max', Min = 1, Max = 300, Default = 50, Function = function() end })
+    heightSlider = terrainModule:CreateSlider({ Name = 'Mountain Height Max', Min = 1, Max = 300, Default = 60, Function = function() end })
     scaleSlider = terrainModule:CreateSlider({ Name = 'Terrain Smoothness', Min = 10, Max = 500, Default = 150 })
     curveSlider = terrainModule:CreateSlider({ Name = 'Valley Exponent (x10)', Min = 1, Max = 50, Default = 15 })
     
@@ -3496,7 +3545,9 @@ run(function()
     offXSlider = terrainModule:CreateSlider({ Name = 'Seed Offset X', Min = -10000, Max = 10000, Default = 0, Function = function() end })
     offZSlider = terrainModule:CreateSlider({ Name = 'Seed Offset Z', Min = -10000, Max = 10000, Default = 0, Function = function() end })
 
-    voxelToggle = terrainModule:CreateToggle({ Name = 'Voxel Mode (High Optimization)', Default = true, Tooltip = "Voxel grids mesh perfectly, drastically saving parts." })
+    biomeToggle = terrainModule:CreateToggle({ Name = 'Enable Biome Painting', Default = true, Tooltip = "Paints water, sand, grass, and snow based on height." })
+    voxelToggle = terrainModule:CreateToggle({ Name = 'Voxel Mode (Minecraft)', Default = false, Tooltip = "Snaps blocks to strict grid levels." })
+    
     blockDropdown = terrainModule:CreateDropdown({ Name = 'Base Block', List = getAvailableBlocks(), Function = function() end})
     fallbackBox = terrainModule:CreateTextBox({ Name = 'Fallbacks', Default = "PlasticBlock, WoodBlock" })
     
@@ -3504,7 +3555,6 @@ run(function()
     maxModeToggle = terrainModule:CreateToggle({ Name = 'Max Mode', Default = false })
 
 end)
-
 
 
 
