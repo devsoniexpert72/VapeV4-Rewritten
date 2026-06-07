@@ -930,6 +930,10 @@ end)
 
 
 
+
+
+
+
 run(function()
     local vape = shared.vape
     if not vape then return end
@@ -957,6 +961,7 @@ run(function()
     local linkBox, blockDropdown, fallbackBox
     local resSlider, partSizeSlider, speedSlider, maxModeToggle
     local imgOffX, imgOffY, imgOffZ
+    local optimizeToggle, optimizeSlider, removeBgToggle
     
     local previewFolderName = "Image_Preview_Hologram"
     local cachedImageData = nil
@@ -1003,6 +1008,9 @@ run(function()
         for _, part in ipairs(previewFolder:GetChildren()) do
             local px = part:GetAttribute("px")
             local py = part:GetAttribute("py")
+            local pw = part:GetAttribute("pw") or 1
+            local ph = part:GetAttribute("ph") or 1
+
             if px and py then
                 local relativePos = Vector3.new(
                     (px * sizeMult) - halfWidth,
@@ -1010,7 +1018,7 @@ run(function()
                     0
                 )
                 part.CFrame = targetBaseCF:ToWorldSpace(CFrame.new(relativePos))
-                part.Size = Vector3.new(sizeMult, sizeMult, sizeMult)
+                part.Size = Vector3.new(pw * sizeMult, ph * sizeMult, sizeMult)
             end
         end
     end
@@ -1074,7 +1082,7 @@ run(function()
                 end
 
                 pcall(function() workspace:WaitForChild("InstaLoadFunction", 1):InvokeServer() end)
-                notify('ImageLoader', 'Building image... (' .. totalNeeded .. ' blocks)', 5, 'info')
+                notify('ImageLoader', 'Building optimized image... (' .. totalNeeded .. ' grouped blocks)', 5, 'info')
 
                 local spawnDelayRate = 1 / speedSlider.Value
                 local spawnBatchSize = math.max(1, math.ceil(0.015 / spawnDelayRate))
@@ -1105,7 +1113,10 @@ run(function()
                         break
                     end
 
-                    -- Perfect Placement Logic
+                    -- Apply Python Optimized Size & Coordinates
+                    local pW = pixel.w or 1
+                    local pH = pixel.h or 1
+
                     local relativePos = Vector3.new(
                         (pixel.x * sizeMult) - halfWidth,
                         (pixel.y * sizeMult) + surfaceY,
@@ -1114,13 +1125,13 @@ run(function()
                     
                     local savedRelativeCFrame = baseOffset * CFrame.new(relativePos)
                     local absoluteTargetCFrame = plotZone.CFrame:ToWorldSpace(savedRelativeCFrame)
-                    local targetSize = Vector3.new(sizeMult, sizeMult, sizeMult)
+                    
+                    -- Stretches the block mathematically based on Greedy Mesh Data
+                    local targetSize = Vector3.new(pW * sizeMult, pH * sizeMult, sizeMult)
                     local targetColor = Color3.new(unpack(pixel.c))
 
                     task.spawn(function()
                         local currentTotalCount = getCount(currentBlockType)
-                        
-                        -- Passing EXACT inventory count args
                         buildRF:InvokeServer(currentBlockType, currentTotalCount, plotZone, savedRelativeCFrame, true, absoluteTargetCFrame, false)
                         
                         local spawnedBlock = nil
@@ -1174,11 +1185,15 @@ run(function()
             local url = linkBox.Value
             if not url or url == "" then notify('Error', 'Please enter an image link.', 5, 'alert') return end
             
-            notify('Processing', 'Asking local Python server to process image...', 3, 'info')
+            notify('Processing', 'Asking Python server to run Deep Optimization...', 3, 'info')
             
             task.spawn(function()
                 local resLevel = resSlider.Value
-                local fetchUrl = "https://v4imges.onrender.com/process?res=" .. resLevel .. "&url=" .. HttpService:UrlEncode(url)
+                local optParam = optimizeToggle.Enabled and "true" or "false"
+                local threshParam = optimizeSlider.Value
+                local noBgParam = removeBgToggle.Enabled and "true" or "false"
+
+                local fetchUrl = "https://v4imges-production.up.railway.app/process?res=" .. resLevel .. "&opt=" .. optParam .. "&thresh=" .. threshParam .. "&nobg=" .. noBgParam .. "&url=" .. HttpService:UrlEncode(url)
                 
                 local suc, response = pcall(function() return game:HttpGet(fetchUrl) end)
 
@@ -1194,7 +1209,7 @@ run(function()
                 end
 
                 cachedImageData = decoded
-                notify('Success', 'Image processed! Requires ' .. decoded.total_blocks .. ' blocks.', 10, 'info')
+                notify('Success', 'Image optimized! Blocks reduced to: ' .. decoded.total_blocks, 10, 'info')
 
                 if workspace:FindFirstChild(previewFolderName) then workspace[previewFolderName]:Destroy() end
                 local previewFolder = Instance.new("Folder")
@@ -1210,22 +1225,26 @@ run(function()
                 local baseOffset = CFrame.new(imgOffX.Value, imgOffY.Value, imgOffZ.Value)
 
                 for _, pixel in ipairs(decoded.pixels) do
+                    local pW = pixel.w or 1
+                    local pH = pixel.h or 1
+
                     local ghost = Instance.new("Part")
                     ghost.Anchored = true
                     ghost.CanCollide = false
-                    ghost.Transparency = 0
+                    ghost.Transparency = 0.5
                     ghost.Color = Color3.new(unpack(pixel.c))
-                    ghost.Size = Vector3.new(sizeMult, sizeMult, sizeMult)
                     
-                    -- Cache attributes for ultra-fast live updates
                     ghost:SetAttribute("px", pixel.x)
                     ghost:SetAttribute("py", pixel.y)
+                    ghost:SetAttribute("pw", pW)
+                    ghost:SetAttribute("ph", pH)
                     
                     local relativePos = Vector3.new(
                         (pixel.x * sizeMult) - halfWidth,
                         (pixel.y * sizeMult) + surfaceY,
                         0
                     )
+                    ghost.Size = Vector3.new(pW * sizeMult, pH * sizeMult, sizeMult)
                     ghost.CFrame = plotZone.CFrame:ToWorldSpace(baseOffset * CFrame.new(relativePos))
                     ghost.Parent = previewFolder
                 end
@@ -1246,23 +1265,26 @@ run(function()
     -- UI COMPONENTS
     -- =========================================================================
     linkBox = imageLoaderModule:CreateTextBox({ Name = 'Image Link', Default = "", Tooltip = "Direct link to a .png or .jpg image."})
-    resSlider = imageLoaderModule:CreateSlider({ Name = 'Resolution Drop (Higher = Less Blocks)', Min = 1, Max = 20, Default = 1, Function = function() end })
-    partSizeSlider = imageLoaderModule:CreateSlider({ Name = 'Pixel Scale Multiplier (x10)', Min = 1, Max = 100, Default = 10, Function = updateLivePreview, Tooltip = "10 = 1x1x1 stud blocks."})
     
+    -- Backend Modifier Settings
+    optimizeToggle = imageLoaderModule:CreateToggle({ Name = 'Greedy Mesh Optimizer', Default = true, Function = function() end, Tooltip = "Combines identically colored adjacent pixels into single stretched blocks."})
+    optimizeSlider = imageLoaderModule:CreateSlider({ Name = 'Color Variance Match', Min = 1, Max = 10, Default = 1, Function = function() end, Tooltip = "1 = Exact match. 10 = Loose color match (Increases block compression)."})
+    removeBgToggle = imageLoaderModule:CreateToggle({ Name = 'AI Background Removal', Default = false, Function = function() end, Tooltip = "Requires 'pip install rembg' on your python server."})
+    resSlider = imageLoaderModule:CreateSlider({ Name = 'Resolution Drop', Min = 1, Max = 20, Default = 1, Function = function() end })
+    
+    -- Live Scale / Offset Adjustments
+    partSizeSlider = imageLoaderModule:CreateSlider({ Name = 'Pixel Scale Multiplier (x10)', Min = 1, Max = 100, Default = 10, Function = updateLivePreview, Tooltip = "10 = 1x1x1 stud blocks."})
     imgOffX = imageLoaderModule:CreateSlider({ Name = 'Offset X', Min = -1000, Max = 1000, Default = 0, Function = updateLivePreview })
     imgOffY = imageLoaderModule:CreateSlider({ Name = 'Offset Y', Min = -1000, Max = 1000, Default = 0, Function = updateLivePreview })
     imgOffZ = imageLoaderModule:CreateSlider({ Name = 'Offset Z', Min = -1000, Max = 1000, Default = 0, Function = updateLivePreview })
 
+    -- Tool Configuration
     blockDropdown = imageLoaderModule:CreateDropdown({ Name = 'Base Block Type', List = getAvailableBlocks(), Function = function() end})
     fallbackBox = imageLoaderModule:CreateTextBox({ Name = 'Fallback Blocks (Comma Separated)', Default = "PlasticBlock, WoodBlock", Tooltip = "Used if you run out of the base block type."})
-    
     speedSlider = imageLoaderModule:CreateSlider({ Name = 'Spawn Speed', Min = 100, Max = 1000, Default = 500, Function = function() end })
     maxModeToggle = imageLoaderModule:CreateToggle({ Name = 'Max Mode', Default = false, Function = function(val) if val then notify('Warning', 'Max mode may lag or crash.', 5, 'alert') end end })
 
 end)
-
-
-
 
 
 
