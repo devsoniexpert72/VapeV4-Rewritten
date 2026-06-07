@@ -1193,7 +1193,7 @@ run(function()
                 local threshParam = optimizeSlider.Value
                 local noBgParam = removeBgToggle.Enabled and "true" or "false"
 
-                local fetchUrl = "https://v4imges-production.up.railway.app/process?res=" .. resLevel .. "&opt=" .. optParam .. "&thresh=" .. threshParam .. "&nobg=" .. noBgParam .. "&url=" .. HttpService:UrlEncode(url)
+                local fetchUrl = "https://v4imges.onrender.com/process?res=" .. resLevel .. "&opt=" .. optParam .. "&thresh=" .. threshParam .. "&nobg=" .. noBgParam .. "&url=" .. HttpService:UrlEncode(url)
                 
                 local suc, response = pcall(function() return game:HttpGet(fetchUrl) end)
 
