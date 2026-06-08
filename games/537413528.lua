@@ -3586,36 +3586,39 @@ end)
 
 
 
-
-
-
 run(function()
     local vape = shared.vape
-    if not vape then return end
+    if not vape then return warn("❌ Vape library not found in shared!") end
+
+    -- 1. Create the custom Category (if it doesn't exist already)
+    local babftCategory = vape.Categories['BABFT Tools']
+    if not babftCategory then
+        babftCategory = vape:CreateCategory({
+            Name = 'BABFT Tools',
+            Icon = 'rbxassetid://0', 
+            Size = UDim2.fromOffset(16, 16)
+        })
+    end
 
     local HttpService = game:GetService("HttpService")
     local repStorage = game:GetService("ReplicatedStorage")
     local lp = game:GetService("Players").LocalPlayer
 
-    -- Utility: Vape Notification
     local function notify(title, text, duration, typeTheme)
         if vape.CreateNotification then
             vape:CreateNotification(title, text, duration or 5, typeTheme or 'info')
         end
     end
 
-    -- Utility: Inventory Tracking
     local function getCount(name)
         local d = lp:WaitForChild("Data"):FindFirstChild(name)
         return (d and d:IsA("IntValue")) and d.Value or 0
     end
 
-    -- Utility: Strict Block Checking
     local function checkIsScalable(name)
         return string.find(name, "Block") ~= nil
     end
 
-    -- Utility: Fetch Available Blocks natively
     local function getAvailableBlocks()
         local blocks = {}
         local buildingParts = repStorage:FindFirstChild("BuildingParts")
@@ -3646,7 +3649,7 @@ run(function()
     -- MODULE: 3D MODEL IMPORTER (OBJ BUILDER)
     -- =========================================================================
     local modelLoaderModule
-    local assetIdBox, mBlockDropdown, mFallbackBox
+    local assetIdBox, importModeDropdown, mBlockDropdown, mFallbackBox
     local mScaleSlider, mResSlider, wireframeToggle, mOptimizeToggle
     local mSpeedSlider, mMaxModeToggle
     local mOffX, mOffY, mOffZ, mRotX, mRotY, mRotZ
@@ -3661,38 +3664,25 @@ run(function()
         local plotZone = getPlotZone()
         if not plotZone then return end
 
-        local sizeMult = mResSlider.Value / 10
         local baseOffset = CFrame.new(mOffX.Value, mOffY.Value, mOffZ.Value) * CFrame.Angles(math.rad(mRotX.Value), math.rad(mRotY.Value), math.rad(mRotZ.Value))
         local targetBaseCF = plotZone.CFrame * baseOffset
 
-        for _, part in ipairs(previewFolder:GetChildren()) do
-            local px = part:GetAttribute("px")
-            local py = part:GetAttribute("py")
-            local pz = part:GetAttribute("pz")
-            local pw = part:GetAttribute("pw") or 1
-
-            if px and py and pz then
-                local relativePos = Vector3.new(px, py, pz)
-                local absoluteCF = targetBaseCF:ToWorldSpace(CFrame.new(relativePos))
-                
-                -- Shift center based on optimized width
-                if pw > 1 then
-                    absoluteCF = absoluteCF * CFrame.new((pw - 1) * sizeMult / 2, 0, 0)
-                end
-                
-                part.CFrame = absoluteCF
-                part.Size = Vector3.new(pw * sizeMult, sizeMult, sizeMult)
+        -- Live mathematical hologram updates
+        for i, part in ipairs(previewFolder:GetChildren()) do
+            local blockData = mCachedData.blocks[i]
+            if blockData then
+                part.CFrame = targetBaseCF * blockData.relCF
             end
         end
     end
 
     modelLoaderModule = vape.Categories['BABFT Tools']:CreateModule({
         Name = '3D Importer',
-        Tooltip = 'Voxelizes and builds Roblox models/meshes directly in BABFT.',
+        Tooltip = 'Imports Roblox models directly using Part Copying or Voxelization.',
         Function = function(callback)
             if not callback then return end
             task.spawn(function()
-                if not mCachedData or not mCachedData.voxels then
+                if not mCachedData or not mCachedData.blocks then
                     notify('Error', 'No model processed! Preview it first.', 5, 'alert')
                     modelLoaderModule:Toggle() return
                 end
@@ -3719,7 +3709,7 @@ run(function()
 
                 local fallbacks = parseRedundancy(mFallbackBox.Value)
                 local consumedTracker = {}
-                local totalNeeded = mCachedData.total
+                local totalNeeded = #mCachedData.blocks
                 local baseBlock = mBlockDropdown.Value
 
                 local function getValidBlock()
@@ -3733,7 +3723,7 @@ run(function()
                 end
 
                 pcall(function() workspace:WaitForChild("InstaLoadFunction", 1):InvokeServer() end)
-                notify('3D Importer', 'Building Model... (' .. totalNeeded .. ' grouped blocks)', 5, 'info')
+                notify('3D Importer', 'Building Model... (' .. totalNeeded .. ' blocks)', 5, 'info')
 
                 local spawnDelayRate = 1 / mSpeedSlider.Value
                 local spawnBatchSize = math.max(1, math.ceil(0.015 / spawnDelayRate))
@@ -3742,8 +3732,8 @@ run(function()
                 local paintArgs = {}
                 local threadsCompleted = 0
                 
-                local sizeMult = mResSlider.Value / 10
                 local baseOffset = CFrame.new(mOffX.Value, mOffY.Value, mOffZ.Value) * CFrame.Angles(math.rad(mRotX.Value), math.rad(mRotY.Value), math.rad(mRotZ.Value))
+                local targetBaseCF = plotZone.CFrame * baseOffset
 
                 local unprocessedBlocks = {}
                 local blockAddedConn = playerBlocksFolder.ChildAdded:Connect(function(b)
@@ -3752,23 +3742,19 @@ run(function()
                 end)
                 modelLoaderModule:Clean(blockAddedConn)
 
-                for i, vox in ipairs(mCachedData.voxels) do
+                for i, blockData in ipairs(mCachedData.blocks) do
                     if not modelLoaderModule.Enabled then break end
 
                     local currentBlockType = getValidBlock()
                     if not currentBlockType then
                         notify('Error', 'Out of blocks! Built ' .. (i-1) .. '/' .. totalNeeded, 10, 'alert') break
                     end
-
-                    local pw = vox.w or 1
-                    local relativePos = Vector3.new(vox.x, vox.y, vox.z)
                     
-                    local savedRelativeCFrame = baseOffset * CFrame.new(relativePos)
-                    if pw > 1 then savedRelativeCFrame = savedRelativeCFrame * CFrame.new((pw - 1) * sizeMult / 2, 0, 0) end
+                    local absoluteTargetCFrame = targetBaseCF * blockData.relCF
+                    local savedRelativeCFrame = plotZone.CFrame:ToObjectSpace(absoluteTargetCFrame)
                     
-                    local absoluteTargetCFrame = plotZone.CFrame:ToWorldSpace(savedRelativeCFrame)
-                    local targetSize = Vector3.new(pw * sizeMult, sizeMult, sizeMult)
-                    local targetColor = Color3.new(unpack(vox.c))
+                    local targetSize = blockData.size
+                    local targetColor = blockData.color
 
                     task.spawn(function()
                         local currentTotalCount = getCount(currentBlockType)
@@ -3792,7 +3778,9 @@ run(function()
                         end
                         
                         if spawnedBlock and modelLoaderModule.Enabled then
-                            task.spawn(function() scaleRF:InvokeServer(spawnedBlock, targetSize, absoluteTargetCFrame) end)
+                            if checkIsScalable(currentBlockType) then
+                                task.spawn(function() scaleRF:InvokeServer(spawnedBlock, targetSize, absoluteTargetCFrame) end)
+                            end
                             table.insert(paintArgs, {spawnedBlock, targetColor})
                         end
                         threadsCompleted = threadsCompleted + 1
@@ -3806,7 +3794,7 @@ run(function()
                 while threadsCompleted < totalNeeded and modelLoaderModule.Enabled do task.wait() end
                 
                 if paintTool and #paintArgs > 0 then
-                    notify('Painting', 'Applying textures...', 5, 'info')
+                    notify('Painting', 'Applying colors...', 5, 'info')
                     task.spawn(function() paintTool:WaitForChild("RF"):InvokeServer(paintArgs) end)
                 end
 
@@ -3817,22 +3805,51 @@ run(function()
     })
 
     modelLoaderModule:CreateButton({
-        Name = 'Preview & Voxelize Model',
+        Name = 'Preview & Process Model',
         Function = function()
             local assetId = assetIdBox.Value:match("%d+")
             if not assetId then notify('Error', 'Please enter a valid Asset ID.', 5, 'alert') return end
             
-            notify('Processing', 'Downloading and voxelizing 3D mesh...', 5, 'info')
+            notify('Processing', 'Downloading Asset ID: ' .. assetId, 5, 'info')
             
             task.spawn(function()
-                local suc, objs = pcall(function() return game:GetObjects("rbxassetid://" .. assetId) end)
-                if not suc or not objs or #objs == 0 then
+                -- Bulletproof Asset Fetcher
+                local objs
+                local s, e = pcall(function() objs = game:GetObjects("rbxassetid://" .. assetId) end)
+                if not s or not objs or #objs == 0 then
+                    s, e = pcall(function()
+                        local mp = Instance.new("MeshPart")
+                        mp.MeshId = "rbxassetid://" .. assetId
+                        objs = {mp}
+                    end)
+                end
+                if not s or not objs or #objs == 0 then
+                    s, e = pcall(function()
+                        local p = Instance.new("Part")
+                        local sm = Instance.new("SpecialMesh")
+                        sm.MeshId = "rbxassetid://" .. assetId
+                        sm.Parent = p
+                        objs = {p}
+                    end)
+                end
+
+                if not objs or #objs == 0 then
                     notify('Download Error', 'Could not load asset. It might be private or invalid.', 5, 'alert') return
                 end
 
                 local tempModel = Instance.new("Model")
-                for _, obj in ipairs(objs) do obj.Parent = tempModel end
-                tempModel.Name = "VoxelizerTemp"
+                for _, obj in ipairs(objs) do 
+                    if obj:IsA("SpecialMesh") or obj:IsA("Mesh") then
+                        local p = Instance.new("Part")
+                        p.Size = Vector3.new(2,2,2)
+                        obj.Parent = p
+                        p.Parent = tempModel
+                    else
+                        obj.Parent = tempModel 
+                    end
+                end
+                
+                tempModel.Name = "ImporterTemp"
                 tempModel.Parent = workspace
                 
                 -- Move far away to prevent player interference
@@ -3840,111 +3857,131 @@ run(function()
                 
                 -- Scale mesh based on Original Scale multiplier
                 local meshScale = mScaleSlider.Value / 10
-                for _, p in ipairs(tempModel:GetDescendants()) do
-                    if p:IsA("BasePart") then
-                        p.Size = p.Size * meshScale
-                        p.Anchored = true
+                tempModel:ScaleTo(meshScale)
+                task.wait(0.1)
+
+                local blocks = {}
+                local bboxCF, bboxSize = tempModel:GetBoundingBox()
+
+                if importModeDropdown.Value == "Direct Part Copy" then
+                    notify('Processing', 'Copying exact parts natively...', 3, 'info')
+                    for _, p in ipairs(tempModel:GetDescendants()) do
+                        if p:IsA("BasePart") then
+                            table.insert(blocks, {
+                                relCF = bboxCF:ToObjectSpace(p.CFrame),
+                                size = p.Size,
+                                color = p.Color
+                            })
+                        end
                     end
-                end
-
-                -- Voxelization Raycast Logic (6-Directional Shell Capture)
-                local step = mResSlider.Value / 10
-                local grid = {}
-                local cf, size = tempModel:GetBoundingBox()
-                local minX, minY, minZ = cf.Position.X - size.X/2, cf.Position.Y - size.Y/2, cf.Position.Z - size.Z/2
-                local maxX, maxY, maxZ = cf.Position.X + size.X/2, cf.Position.Y + size.Y/2, cf.Position.Z + size.Z/2
-
-                local params = RaycastParams.new()
-                params.FilterDescendantsInstances = {tempModel}
-                params.FilterType = Enum.RaycastFilterType.Include
-
-                local function addVoxel(pos, color)
-                    local rx = math.floor((pos.X - minX) / step + 0.5) * step + minX
-                    local ry = math.floor((pos.Y - minY) / step + 0.5) * step + minY
-                    local rz = math.floor((pos.Z - minZ) / step + 0.5) * step + minZ
-
-                    if wireframeToggle.Enabled then
-                        local ix = math.floor((pos.X - minX) / step + 0.5)
-                        local iy = math.floor((pos.Y - minY) / step + 0.5)
-                        local iz = math.floor((pos.Z - minZ) / step + 0.5)
-                        if (ix + iy + iz) % 2 ~= 0 then return end
+                else
+                    -- VOLUMETRIC VOXELIZER
+                    notify('Processing', 'Running Volumetric Voxelization...', 5, 'info')
+                    for _, p in ipairs(tempModel:GetDescendants()) do
+                        if p:IsA("BasePart") then
+                            p.Anchored = true; p.CanQuery = true; p.CanCollide = true
+                        end
                     end
 
-                    local key = string.format("%.2f,%.2f,%.2f", rx, ry, rz)
-                    if not grid[key] then
-                        grid[key] = {
-                            x = rx - cf.Position.X, 
-                            y = ry - cf.Position.Y, 
-                            z = rz - cf.Position.Z, 
-                            c = {color.R, color.G, color.B},
-                            w = 1
-                        }
-                    end
-                end
+                    local step = mResSlider.Value / 10
+                    if bboxSize.Magnitude < 0.1 then bboxSize = Vector3.new(10,10,10) end
 
-                local over = step * 2
-                local loopCount = 0
+                    local minX, minY, minZ = bboxCF.Position.X - bboxSize.X/2, bboxCF.Position.Y - bboxSize.Y/2, bboxCF.Position.Z - bboxSize.Z/2
+                    local maxX, maxY, maxZ = bboxCF.Position.X + bboxSize.X/2, bboxCF.Position.Y + bboxSize.Y/2, bboxCF.Position.Z + bboxSize.Z/2
 
-                -- Raycasting bounds logic
-                for x = minX, maxX, step do
-                    for z = minZ, maxZ, step do
-                        local r1 = workspace:Raycast(Vector3.new(x, maxY + over, z), Vector3.new(0, -size.Y - over*2, 0), params)
-                        if r1 then addVoxel(r1.Position, r1.Instance.Color) end
-                        local r2 = workspace:Raycast(Vector3.new(x, minY - over, z), Vector3.new(0, size.Y + over*2, 0), params)
-                        if r2 then addVoxel(r2.Position, r2.Instance.Color) end
-                        loopCount = loopCount + 1; if loopCount % 2000 == 0 then task.wait() end
+                    local overlapParams = OverlapParams.new()
+                    overlapParams.FilterDescendantsInstances = {tempModel}
+                    overlapParams.FilterType = Enum.RaycastFilterType.Include
+
+                    local grid = {}
+                    local stepVec = Vector3.new(step, step, step)
+                    
+                    -- Pass 1: Solid Voxelization
+                    for x = minX, maxX + step, step do
+                        for y = minY, maxY + step, step do
+                            for z = minZ, maxZ + step, step do
+                                local pos = CFrame.new(x, y, z)
+                                local parts = workspace:GetPartBoundsInBox(pos, stepVec, overlapParams)
+                                if #parts > 0 then
+                                    local rx = math.floor((x - minX) / step + 0.5) * step + minX
+                                    local ry = math.floor((y - minY) / step + 0.5) * step + minY
+                                    local rz = math.floor((z - minZ) / step + 0.5) * step + minZ
+                                    local key = string.format("%.2f,%.2f,%.2f", rx, ry, rz)
+                                    if not grid[key] then
+                                        grid[key] = {
+                                            x = rx - bboxCF.Position.X, y = ry - bboxCF.Position.Y, z = rz - bboxCF.Position.Z, 
+                                            c = parts[1].Color, rx = rx, ry = ry, rz = rz
+                                        }
+                                    end
+                                end
+                            end
+                        end
+                        task.wait()
                     end
-                end
-                for y = minY, maxY, step do
-                    for z = minZ, maxZ, step do
-                        local r1 = workspace:Raycast(Vector3.new(maxX + over, y, z), Vector3.new(-size.X - over*2, 0, 0), params)
-                        if r1 then addVoxel(r1.Position, r1.Instance.Color) end
-                        local r2 = workspace:Raycast(Vector3.new(minX - over, y, z), Vector3.new(size.X + over*2, 0, 0), params)
-                        if r2 then addVoxel(r2.Position, r2.Instance.Color) end
-                        loopCount = loopCount + 1; if loopCount % 2000 == 0 then task.wait() end
+
+                    -- Pass 2: Hollowing & Optimization
+                    local voxels = {}
+                    for key, v in pairs(grid) do
+                        local kUp = string.format("%.2f,%.2f,%.2f", v.rx, v.ry+step, v.rz)
+                        local kDn = string.format("%.2f,%.2f,%.2f", v.rx, v.ry-step, v.rz)
+                        local kLf = string.format("%.2f,%.2f,%.2f", v.rx-step, v.ry, v.rz)
+                        local kRt = string.format("%.2f,%.2f,%.2f", v.rx+step, v.ry, v.rz)
+                        local kFd = string.format("%.2f,%.2f,%.2f", v.rx, v.ry, v.rz+step)
+                        local kBk = string.format("%.2f,%.2f,%.2f", v.rx, v.ry, v.rz-step)
+                        
+                        local isInternal = grid[kUp] and grid[kDn] and grid[kLf] and grid[kRt] and grid[kFd] and grid[kBk]
+                        
+                        if not isInternal then
+                            local keep = true
+                            if wireframeToggle.Enabled then
+                                local ix, iy, iz = math.floor((v.rx - minX)/step+0.5), math.floor((v.ry - minY)/step+0.5), math.floor((v.rz - minZ)/step+0.5)
+                                if (ix + iy + iz) % 2 ~= 0 then keep = false end
+                            end
+                            if keep then table.insert(voxels, {x=v.x, y=v.y, z=v.z, c=v.c, w=1}) end
+                        end
                     end
-                end
-                for x = minX, maxX, step do
-                    for y = minY, maxY, step do
-                        local r1 = workspace:Raycast(Vector3.new(x, y, maxZ + over), Vector3.new(0, 0, -size.Z - over*2), params)
-                        if r1 then addVoxel(r1.Position, r1.Instance.Color) end
-                        local r2 = workspace:Raycast(Vector3.new(x, y, minZ - over), Vector3.new(0, 0, size.Z + over*2), params)
-                        if r2 then addVoxel(r2.Position, r2.Instance.Color) end
-                        loopCount = loopCount + 1; if loopCount % 2000 == 0 then task.wait() end
+
+                    if mOptimizeToggle.Enabled and not wireframeToggle.Enabled then
+                        table.sort(voxels, function(a, b)
+                            if math.abs(a.y - b.y) > 0.001 then return a.y < b.y end
+                            if math.abs(a.z - b.z) > 0.001 then return a.z < b.z end
+                            return a.x < b.x
+                        end)
+                        local optimized = {}
+                        local current = nil
+                        for _, v in ipairs(voxels) do
+                            if current and math.abs(current.y - v.y) < 0.001 and math.abs(current.z - v.z) < 0.001 
+                               and math.abs((current.x + (current.w * step)) - v.x) < 0.001 
+                               and current.c == v.c then
+                                current.w = current.w + 1
+                            else
+                                if current then table.insert(optimized, current) end
+                                current = {x = v.x, y = v.y, z = v.z, c = v.c, w = 1}
+                            end
+                        end
+                        if current then table.insert(optimized, current) end
+                        voxels = optimized
+                    end
+
+                    for _, v in ipairs(voxels) do
+                        local relCF = CFrame.new(v.x, v.y, v.z)
+                        if v.w > 1 then relCF = relCF * CFrame.new((v.w - 1) * step / 2, 0, 0) end
+                        table.insert(blocks, {
+                            relCF = relCF,
+                            size = Vector3.new(v.w * step, step, step),
+                            color = v.c
+                        })
                     end
                 end
 
                 tempModel:Destroy()
 
-                local voxels = {}
-                for _, v in pairs(grid) do table.insert(voxels, v) end
-
-                -- 3D Greedy Meshing Optimization (X-Axis compression)
-                if mOptimizeToggle.Enabled and not wireframeToggle.Enabled then
-                    table.sort(voxels, function(a, b)
-                        if math.abs(a.y - b.y) > 0.001 then return a.y < b.y end
-                        if math.abs(a.z - b.z) > 0.001 then return a.z < b.z end
-                        return a.x < b.x
-                    end)
-                    
-                    local optimized = {}
-                    local current = nil
-                    for _, v in ipairs(voxels) do
-                        if current and math.abs(current.y - v.y) < 0.001 and math.abs(current.z - v.z) < 0.001 
-                           and math.abs((current.x + (current.w * step)) - v.x) < 0.001 
-                           and current.c[1] == v.c[1] and current.c[2] == v.c[2] and current.c[3] == v.c[3] then
-                            current.w = current.w + 1
-                        else
-                            if current then table.insert(optimized, current) end
-                            current = {x = v.x, y = v.y, z = v.z, c = v.c, w = 1}
-                        end
-                    end
-                    if current then table.insert(optimized, current) end
-                    voxels = optimized
+                if #blocks == 0 then
+                    notify('Error', '0 blocks parsed. Model might be empty.', 5, 'alert') return
                 end
 
-                mCachedData = {voxels = voxels, total = #voxels}
-                notify('Success', 'Model generated! Required blocks: ' .. mCachedData.total, 8, 'info')
+                mCachedData = {blocks = blocks}
+                notify('Success', 'Model generated! Required parts: ' .. #blocks, 8, 'info')
 
                 -- Render 3D Hologram Preview
                 if workspace:FindFirstChild(mPreviewFolderStr) then workspace[mPreviewFolderStr]:Destroy() end
@@ -3956,28 +3993,16 @@ run(function()
                 if not plotZone then return end
                 
                 local baseOffset = CFrame.new(mOffX.Value, mOffY.Value, mOffZ.Value) * CFrame.Angles(math.rad(mRotX.Value), math.rad(mRotY.Value), math.rad(mRotZ.Value))
+                local targetBaseCF = plotZone.CFrame * baseOffset
 
-                for i, vox in ipairs(voxels) do
+                for i, block in ipairs(blocks) do
                     local ghost = Instance.new("Part")
                     ghost.Anchored = true
                     ghost.CanCollide = false
                     ghost.Transparency = 0.5
-                    ghost.Color = Color3.new(unpack(vox.c))
-                    
-                    ghost:SetAttribute("px", vox.x)
-                    ghost:SetAttribute("py", vox.y)
-                    ghost:SetAttribute("pz", vox.z)
-                    ghost:SetAttribute("pw", vox.w)
-                    
-                    local relativePos = Vector3.new(vox.x, vox.y, vox.z)
-                    local absoluteCF = plotZone.CFrame:ToWorldSpace(baseOffset * CFrame.new(relativePos))
-                    
-                    if vox.w > 1 then
-                        absoluteCF = absoluteCF * CFrame.new((vox.w - 1) * step / 2, 0, 0)
-                    end
-                    
-                    ghost.Size = Vector3.new(vox.w * step, step, step)
-                    ghost.CFrame = absoluteCF
+                    ghost.Color = block.color
+                    ghost.Size = block.size
+                    ghost.CFrame = targetBaseCF * block.relCF
                     ghost.Parent = previewFolder
                     
                     if i % 1000 == 0 then task.wait() end
@@ -3996,12 +4021,14 @@ run(function()
     })
 
     -- UI Components
-    assetIdBox = modelLoaderModule:CreateTextBox({ Name = 'Roblox Asset ID', Default = "", Tooltip = "Enter the ID of a mesh or model."})
-    mScaleSlider = modelLoaderModule:CreateSlider({ Name = 'Original Mesh Scale (x10)', Min = 1, Max = 100, Default = 10, Tooltip = "Scales the raw asset before it gets converted into blocks."})
-    mResSlider = modelLoaderModule:CreateSlider({ Name = 'Voxel Resolution Block Size (x10)', Min = 1, Max = 100, Default = 10, Function = updateModelLivePreview, Tooltip = "10 = 1x1x1 blocks. Higher = chunkier build."})
+    assetIdBox = modelLoaderModule:CreateTextBox({ Name = 'Roblox Asset ID', Default = "11442510", Tooltip = "Enter the ID of a mesh or model."})
+    importModeDropdown = modelLoaderModule:CreateDropdown({ Name = 'Import Mode', List = {'Direct Part Copy', 'Voxelize Mesh'}, Function = function() end, Tooltip = "Direct Part Copy flawlessly copies standard Roblox parts. Voxelize Mesh converts complex curves into block chunks."})
     
-    wireframeToggle = modelLoaderModule:CreateToggle({ Name = 'Checkerboard Wireframe', Default = false, Tooltip = "Cuts block requirement by 50% by building in a mesh pattern."})
-    mOptimizeToggle = modelLoaderModule:CreateToggle({ Name = 'Greedy Mesh Optimizer', Default = true, Tooltip = "Combines straight lines into stretched parts to save blocks."})
+    mScaleSlider = modelLoaderModule:CreateSlider({ Name = 'Original Mesh Scale (x10)', Min = 1, Max = 100, Default = 50, Tooltip = "Scales the raw asset before it gets converted."})
+    mResSlider = modelLoaderModule:CreateSlider({ Name = 'Voxel Resolution Size (x10)', Min = 1, Max = 100, Default = 10, Tooltip = "10 = 1x1x1 blocks. Higher = chunkier build. (Only applies to Voxelize Mode)"})
+    
+    wireframeToggle = modelLoaderModule:CreateToggle({ Name = 'Checkerboard Wireframe', Default = false, Tooltip = "Cuts block requirement by 50% by building in a hollow pattern. (Only applies to Voxelize Mode)"})
+    mOptimizeToggle = modelLoaderModule:CreateToggle({ Name = 'Greedy Mesh Optimizer', Default = true, Tooltip = "Combines straight lines into stretched parts to save blocks. (Only applies to Voxelize Mode)"})
 
     mOffX = modelLoaderModule:CreateSlider({ Name = 'Offset X', Min = -1000, Max = 1000, Default = 0, Function = updateModelLivePreview })
     mOffY = modelLoaderModule:CreateSlider({ Name = 'Offset Y', Min = -1000, Max = 1000, Default = 50, Function = updateModelLivePreview })
@@ -4017,10 +4044,6 @@ run(function()
     mMaxModeToggle = modelLoaderModule:CreateToggle({ Name = 'Max Mode', Default = false, Function = function(val) if val then notify('Warning', 'Max mode may lag.', 5, 'alert') end end })
 
 end)
-
-
-
-
 
 
 
