@@ -3579,6 +3579,452 @@ end)
 
 
 
+--3D OBJ IMPORTER!!!!!!!!!!!!!!
+
+
+
+
+
+
+
+
+
+run(function()
+    local vape = shared.vape
+    if not vape then return end
+
+    local HttpService = game:GetService("HttpService")
+    local repStorage = game:GetService("ReplicatedStorage")
+    local lp = game:GetService("Players").LocalPlayer
+
+    -- Utility: Vape Notification
+    local function notify(title, text, duration, typeTheme)
+        if vape.CreateNotification then
+            vape:CreateNotification(title, text, duration or 5, typeTheme or 'info')
+        end
+    end
+
+    -- Utility: Inventory Tracking
+    local function getCount(name)
+        local d = lp:WaitForChild("Data"):FindFirstChild(name)
+        return (d and d:IsA("IntValue")) and d.Value or 0
+    end
+
+    -- Utility: Strict Block Checking
+    local function checkIsScalable(name)
+        return string.find(name, "Block") ~= nil
+    end
+
+    -- Utility: Fetch Available Blocks natively
+    local function getAvailableBlocks()
+        local blocks = {}
+        local buildingParts = repStorage:FindFirstChild("BuildingParts")
+        if buildingParts then
+            for _, v in ipairs(buildingParts:GetChildren()) do
+                if string.find(v.Name, "Block") then table.insert(blocks, v.Name) end
+            end
+        end
+        if #blocks == 0 then table.insert(blocks, "PlasticBlock") end
+        return blocks
+    end
+
+    local function parseRedundancy(text)
+        local list = {}
+        if not text or text == "" then return list end
+        for match in text:gmatch("[^,]+") do table.insert(list, match:match("^%s*(.-)%s*$")) end
+        return list
+    end
+
+    local function getPlotZone()
+        local t = tostring(lp.Team)
+        local p = "WhiteZone"
+        if t=="red" then p="Really redZone" elseif t=="blue" then p="Really blueZone" elseif t=="black" then p="BlackZone" elseif t=="yellow" then p="New YellerZone" elseif t=="magenta" then p="MagentaZone" elseif t=="green" then p="CamoZone" end
+        return workspace:FindFirstChild(p)
+    end
+
+    -- =========================================================================
+    -- MODULE: 3D MODEL IMPORTER (OBJ BUILDER)
+    -- =========================================================================
+    local modelLoaderModule
+    local assetIdBox, mBlockDropdown, mFallbackBox
+    local mScaleSlider, mResSlider, wireframeToggle, mOptimizeToggle
+    local mSpeedSlider, mMaxModeToggle
+    local mOffX, mOffY, mOffZ, mRotX, mRotY, mRotZ
+    
+    local mCachedData = nil
+    local mPreviewFolderStr = "Model_Preview_Hologram"
+
+    local function updateModelLivePreview()
+        if not mCachedData then return end
+        local previewFolder = workspace:FindFirstChild(mPreviewFolderStr)
+        if not previewFolder then return end
+        local plotZone = getPlotZone()
+        if not plotZone then return end
+
+        local sizeMult = mResSlider.Value / 10
+        local baseOffset = CFrame.new(mOffX.Value, mOffY.Value, mOffZ.Value) * CFrame.Angles(math.rad(mRotX.Value), math.rad(mRotY.Value), math.rad(mRotZ.Value))
+        local targetBaseCF = plotZone.CFrame * baseOffset
+
+        for _, part in ipairs(previewFolder:GetChildren()) do
+            local px = part:GetAttribute("px")
+            local py = part:GetAttribute("py")
+            local pz = part:GetAttribute("pz")
+            local pw = part:GetAttribute("pw") or 1
+
+            if px and py and pz then
+                local relativePos = Vector3.new(px, py, pz)
+                local absoluteCF = targetBaseCF:ToWorldSpace(CFrame.new(relativePos))
+                
+                -- Shift center based on optimized width
+                if pw > 1 then
+                    absoluteCF = absoluteCF * CFrame.new((pw - 1) * sizeMult / 2, 0, 0)
+                end
+                
+                part.CFrame = absoluteCF
+                part.Size = Vector3.new(pw * sizeMult, sizeMult, sizeMult)
+            end
+        end
+    end
+
+    modelLoaderModule = vape.Categories['BABFT Tools']:CreateModule({
+        Name = '3D Importer',
+        Tooltip = 'Voxelizes and builds Roblox models/meshes directly in BABFT.',
+        Function = function(callback)
+            if not callback then return end
+            task.spawn(function()
+                if not mCachedData or not mCachedData.voxels then
+                    notify('Error', 'No model processed! Preview it first.', 5, 'alert')
+                    modelLoaderModule:Toggle() return
+                end
+
+                local char = lp.Character or lp.CharacterAdded:Wait()
+                local function getTool(toolName)
+                    local t = char:FindFirstChild(toolName) or lp.Backpack:FindFirstChild(toolName)
+                    if t and t.Parent ~= char then t.Parent = char end return t
+                end
+
+                local buildTool = getTool("BuildingTool")
+                local scaleTool = getTool("ScalingTool")
+                local paintTool = getTool("PaintingTool")
+
+                if not buildTool or not scaleTool or not paintTool then
+                    notify('Error', 'Missing required tools (Build, Scale, Paint).', 5, 'alert')
+                    modelLoaderModule:Toggle() return
+                end
+
+                local buildRF = buildTool:WaitForChild("RF")
+                local scaleRF = scaleTool:WaitForChild("RF")
+                local plotZone = getPlotZone()
+                local playerBlocksFolder = workspace:WaitForChild("Blocks"):WaitForChild(lp.Name)
+
+                local fallbacks = parseRedundancy(mFallbackBox.Value)
+                local consumedTracker = {}
+                local totalNeeded = mCachedData.total
+                local baseBlock = mBlockDropdown.Value
+
+                local function getValidBlock()
+                    local amtUsed = consumedTracker[baseBlock] or 0
+                    if getCount(baseBlock) > amtUsed then consumedTracker[baseBlock] = amtUsed + 1 return baseBlock end
+                    for _, fb in ipairs(fallbacks) do
+                        local fbUsed = consumedTracker[fb] or 0
+                        if getCount(fb) > fbUsed then consumedTracker[fb] = fbUsed + 1 return fb end
+                    end
+                    return nil
+                end
+
+                pcall(function() workspace:WaitForChild("InstaLoadFunction", 1):InvokeServer() end)
+                notify('3D Importer', 'Building Model... (' .. totalNeeded .. ' grouped blocks)', 5, 'info')
+
+                local spawnDelayRate = 1 / mSpeedSlider.Value
+                local spawnBatchSize = math.max(1, math.ceil(0.015 / spawnDelayRate))
+                if mMaxModeToggle.Enabled then spawnDelayRate = 0; spawnBatchSize = 999999 end
+
+                local paintArgs = {}
+                local threadsCompleted = 0
+                
+                local sizeMult = mResSlider.Value / 10
+                local baseOffset = CFrame.new(mOffX.Value, mOffY.Value, mOffZ.Value) * CFrame.Angles(math.rad(mRotX.Value), math.rad(mRotY.Value), math.rad(mRotZ.Value))
+
+                local unprocessedBlocks = {}
+                local blockAddedConn = playerBlocksFolder.ChildAdded:Connect(function(b)
+                    if not unprocessedBlocks[b.Name] then unprocessedBlocks[b.Name] = {} end
+                    table.insert(unprocessedBlocks[b.Name], b)
+                end)
+                modelLoaderModule:Clean(blockAddedConn)
+
+                for i, vox in ipairs(mCachedData.voxels) do
+                    if not modelLoaderModule.Enabled then break end
+
+                    local currentBlockType = getValidBlock()
+                    if not currentBlockType then
+                        notify('Error', 'Out of blocks! Built ' .. (i-1) .. '/' .. totalNeeded, 10, 'alert') break
+                    end
+
+                    local pw = vox.w or 1
+                    local relativePos = Vector3.new(vox.x, vox.y, vox.z)
+                    
+                    local savedRelativeCFrame = baseOffset * CFrame.new(relativePos)
+                    if pw > 1 then savedRelativeCFrame = savedRelativeCFrame * CFrame.new((pw - 1) * sizeMult / 2, 0, 0) end
+                    
+                    local absoluteTargetCFrame = plotZone.CFrame:ToWorldSpace(savedRelativeCFrame)
+                    local targetSize = Vector3.new(pw * sizeMult, sizeMult, sizeMult)
+                    local targetColor = Color3.new(unpack(vox.c))
+
+                    task.spawn(function()
+                        local currentTotalCount = getCount(currentBlockType)
+                        buildRF:InvokeServer(currentBlockType, currentTotalCount, plotZone, savedRelativeCFrame, true, absoluteTargetCFrame, false)
+                        
+                        local spawnedBlock = nil
+                        for attempt = 1, 15 do 
+                            if not modelLoaderModule.Enabled then break end
+                            local list = unprocessedBlocks[currentBlockType]
+                            if list and #list > 0 then
+                                for idx, b in ipairs(list) do
+                                    if b.Parent and (b:GetPivot().Position - absoluteTargetCFrame.Position).Magnitude < 10 then
+                                        spawnedBlock = b
+                                        table.remove(list, idx)
+                                        break
+                                    end
+                                end
+                            end
+                            if spawnedBlock then break end
+                            task.wait() 
+                        end
+                        
+                        if spawnedBlock and modelLoaderModule.Enabled then
+                            task.spawn(function() scaleRF:InvokeServer(spawnedBlock, targetSize, absoluteTargetCFrame) end)
+                            table.insert(paintArgs, {spawnedBlock, targetColor})
+                        end
+                        threadsCompleted = threadsCompleted + 1
+                    end)
+                    
+                    if spawnDelayRate > 0 then task.wait(spawnDelayRate) else
+                        if i % spawnBatchSize == 0 then task.wait() end
+                    end
+                end
+
+                while threadsCompleted < totalNeeded and modelLoaderModule.Enabled do task.wait() end
+                
+                if paintTool and #paintArgs > 0 then
+                    notify('Painting', 'Applying textures...', 5, 'info')
+                    task.spawn(function() paintTool:WaitForChild("RF"):InvokeServer(paintArgs) end)
+                end
+
+                notify('3D Importer', '✅ Model Built Successfully!', 5, 'info')
+                modelLoaderModule:Toggle()
+            end)
+        end
+    })
+
+    modelLoaderModule:CreateButton({
+        Name = 'Preview & Voxelize Model',
+        Function = function()
+            local assetId = assetIdBox.Value:match("%d+")
+            if not assetId then notify('Error', 'Please enter a valid Asset ID.', 5, 'alert') return end
+            
+            notify('Processing', 'Downloading and voxelizing 3D mesh...', 5, 'info')
+            
+            task.spawn(function()
+                local suc, objs = pcall(function() return game:GetObjects("rbxassetid://" .. assetId) end)
+                if not suc or not objs or #objs == 0 then
+                    notify('Download Error', 'Could not load asset. It might be private or invalid.', 5, 'alert') return
+                end
+
+                local tempModel = Instance.new("Model")
+                for _, obj in ipairs(objs) do obj.Parent = tempModel end
+                tempModel.Name = "VoxelizerTemp"
+                tempModel.Parent = workspace
+                
+                -- Move far away to prevent player interference
+                tempModel:PivotTo(CFrame.new(0, 50000, 0))
+                
+                -- Scale mesh based on Original Scale multiplier
+                local meshScale = mScaleSlider.Value / 10
+                for _, p in ipairs(tempModel:GetDescendants()) do
+                    if p:IsA("BasePart") then
+                        p.Size = p.Size * meshScale
+                        p.Anchored = true
+                    end
+                end
+
+                -- Voxelization Raycast Logic (6-Directional Shell Capture)
+                local step = mResSlider.Value / 10
+                local grid = {}
+                local cf, size = tempModel:GetBoundingBox()
+                local minX, minY, minZ = cf.Position.X - size.X/2, cf.Position.Y - size.Y/2, cf.Position.Z - size.Z/2
+                local maxX, maxY, maxZ = cf.Position.X + size.X/2, cf.Position.Y + size.Y/2, cf.Position.Z + size.Z/2
+
+                local params = RaycastParams.new()
+                params.FilterDescendantsInstances = {tempModel}
+                params.FilterType = Enum.RaycastFilterType.Include
+
+                local function addVoxel(pos, color)
+                    local rx = math.floor((pos.X - minX) / step + 0.5) * step + minX
+                    local ry = math.floor((pos.Y - minY) / step + 0.5) * step + minY
+                    local rz = math.floor((pos.Z - minZ) / step + 0.5) * step + minZ
+
+                    if wireframeToggle.Enabled then
+                        local ix = math.floor((pos.X - minX) / step + 0.5)
+                        local iy = math.floor((pos.Y - minY) / step + 0.5)
+                        local iz = math.floor((pos.Z - minZ) / step + 0.5)
+                        if (ix + iy + iz) % 2 ~= 0 then return end
+                    end
+
+                    local key = string.format("%.2f,%.2f,%.2f", rx, ry, rz)
+                    if not grid[key] then
+                        grid[key] = {
+                            x = rx - cf.Position.X, 
+                            y = ry - cf.Position.Y, 
+                            z = rz - cf.Position.Z, 
+                            c = {color.R, color.G, color.B},
+                            w = 1
+                        }
+                    end
+                end
+
+                local over = step * 2
+                local loopCount = 0
+
+                -- Raycasting bounds logic
+                for x = minX, maxX, step do
+                    for z = minZ, maxZ, step do
+                        local r1 = workspace:Raycast(Vector3.new(x, maxY + over, z), Vector3.new(0, -size.Y - over*2, 0), params)
+                        if r1 then addVoxel(r1.Position, r1.Instance.Color) end
+                        local r2 = workspace:Raycast(Vector3.new(x, minY - over, z), Vector3.new(0, size.Y + over*2, 0), params)
+                        if r2 then addVoxel(r2.Position, r2.Instance.Color) end
+                        loopCount = loopCount + 1; if loopCount % 2000 == 0 then task.wait() end
+                    end
+                end
+                for y = minY, maxY, step do
+                    for z = minZ, maxZ, step do
+                        local r1 = workspace:Raycast(Vector3.new(maxX + over, y, z), Vector3.new(-size.X - over*2, 0, 0), params)
+                        if r1 then addVoxel(r1.Position, r1.Instance.Color) end
+                        local r2 = workspace:Raycast(Vector3.new(minX - over, y, z), Vector3.new(size.X + over*2, 0, 0), params)
+                        if r2 then addVoxel(r2.Position, r2.Instance.Color) end
+                        loopCount = loopCount + 1; if loopCount % 2000 == 0 then task.wait() end
+                    end
+                end
+                for x = minX, maxX, step do
+                    for y = minY, maxY, step do
+                        local r1 = workspace:Raycast(Vector3.new(x, y, maxZ + over), Vector3.new(0, 0, -size.Z - over*2), params)
+                        if r1 then addVoxel(r1.Position, r1.Instance.Color) end
+                        local r2 = workspace:Raycast(Vector3.new(x, y, minZ - over), Vector3.new(0, 0, size.Z + over*2), params)
+                        if r2 then addVoxel(r2.Position, r2.Instance.Color) end
+                        loopCount = loopCount + 1; if loopCount % 2000 == 0 then task.wait() end
+                    end
+                end
+
+                tempModel:Destroy()
+
+                local voxels = {}
+                for _, v in pairs(grid) do table.insert(voxels, v) end
+
+                -- 3D Greedy Meshing Optimization (X-Axis compression)
+                if mOptimizeToggle.Enabled and not wireframeToggle.Enabled then
+                    table.sort(voxels, function(a, b)
+                        if math.abs(a.y - b.y) > 0.001 then return a.y < b.y end
+                        if math.abs(a.z - b.z) > 0.001 then return a.z < b.z end
+                        return a.x < b.x
+                    end)
+                    
+                    local optimized = {}
+                    local current = nil
+                    for _, v in ipairs(voxels) do
+                        if current and math.abs(current.y - v.y) < 0.001 and math.abs(current.z - v.z) < 0.001 
+                           and math.abs((current.x + (current.w * step)) - v.x) < 0.001 
+                           and current.c[1] == v.c[1] and current.c[2] == v.c[2] and current.c[3] == v.c[3] then
+                            current.w = current.w + 1
+                        else
+                            if current then table.insert(optimized, current) end
+                            current = {x = v.x, y = v.y, z = v.z, c = v.c, w = 1}
+                        end
+                    end
+                    if current then table.insert(optimized, current) end
+                    voxels = optimized
+                end
+
+                mCachedData = {voxels = voxels, total = #voxels}
+                notify('Success', 'Model generated! Required blocks: ' .. mCachedData.total, 8, 'info')
+
+                -- Render 3D Hologram Preview
+                if workspace:FindFirstChild(mPreviewFolderStr) then workspace[mPreviewFolderStr]:Destroy() end
+                local previewFolder = Instance.new("Folder")
+                previewFolder.Name = mPreviewFolderStr
+                previewFolder.Parent = workspace
+
+                local plotZone = getPlotZone()
+                if not plotZone then return end
+                
+                local baseOffset = CFrame.new(mOffX.Value, mOffY.Value, mOffZ.Value) * CFrame.Angles(math.rad(mRotX.Value), math.rad(mRotY.Value), math.rad(mRotZ.Value))
+
+                for i, vox in ipairs(voxels) do
+                    local ghost = Instance.new("Part")
+                    ghost.Anchored = true
+                    ghost.CanCollide = false
+                    ghost.Transparency = 0.5
+                    ghost.Color = Color3.new(unpack(vox.c))
+                    
+                    ghost:SetAttribute("px", vox.x)
+                    ghost:SetAttribute("py", vox.y)
+                    ghost:SetAttribute("pz", vox.z)
+                    ghost:SetAttribute("pw", vox.w)
+                    
+                    local relativePos = Vector3.new(vox.x, vox.y, vox.z)
+                    local absoluteCF = plotZone.CFrame:ToWorldSpace(baseOffset * CFrame.new(relativePos))
+                    
+                    if vox.w > 1 then
+                        absoluteCF = absoluteCF * CFrame.new((vox.w - 1) * step / 2, 0, 0)
+                    end
+                    
+                    ghost.Size = Vector3.new(vox.w * step, step, step)
+                    ghost.CFrame = absoluteCF
+                    ghost.Parent = previewFolder
+                    
+                    if i % 1000 == 0 then task.wait() end
+                end
+            end)
+        end
+    })
+
+    modelLoaderModule:CreateButton({
+        Name = 'Clear Preview',
+        Function = function()
+            if workspace:FindFirstChild(mPreviewFolderStr) then workspace[mPreviewFolderStr]:Destroy() end
+            mCachedData = nil
+            notify('Cleared', '3D preview cleared.', 3, 'info')
+        end
+    })
+
+    -- UI Components
+    assetIdBox = modelLoaderModule:CreateTextBox({ Name = 'Roblox Asset ID', Default = "", Tooltip = "Enter the ID of a mesh or model."})
+    mScaleSlider = modelLoaderModule:CreateSlider({ Name = 'Original Mesh Scale (x10)', Min = 1, Max = 100, Default = 10, Tooltip = "Scales the raw asset before it gets converted into blocks."})
+    mResSlider = modelLoaderModule:CreateSlider({ Name = 'Voxel Resolution Block Size (x10)', Min = 1, Max = 100, Default = 10, Function = updateModelLivePreview, Tooltip = "10 = 1x1x1 blocks. Higher = chunkier build."})
+    
+    wireframeToggle = modelLoaderModule:CreateToggle({ Name = 'Checkerboard Wireframe', Default = false, Tooltip = "Cuts block requirement by 50% by building in a mesh pattern."})
+    mOptimizeToggle = modelLoaderModule:CreateToggle({ Name = 'Greedy Mesh Optimizer', Default = true, Tooltip = "Combines straight lines into stretched parts to save blocks."})
+
+    mOffX = modelLoaderModule:CreateSlider({ Name = 'Offset X', Min = -1000, Max = 1000, Default = 0, Function = updateModelLivePreview })
+    mOffY = modelLoaderModule:CreateSlider({ Name = 'Offset Y', Min = -1000, Max = 1000, Default = 50, Function = updateModelLivePreview })
+    mOffZ = modelLoaderModule:CreateSlider({ Name = 'Offset Z', Min = -1000, Max = 1000, Default = 0, Function = updateModelLivePreview })
+    mRotX = modelLoaderModule:CreateSlider({ Name = 'Rotate X', Min = -180, Max = 180, Default = 0, Function = updateModelLivePreview })
+    mRotY = modelLoaderModule:CreateSlider({ Name = 'Rotate Y', Min = -180, Max = 180, Default = 0, Function = updateModelLivePreview })
+    mRotZ = modelLoaderModule:CreateSlider({ Name = 'Rotate Z', Min = -180, Max = 180, Default = 0, Function = updateModelLivePreview })
+
+    mBlockDropdown = modelLoaderModule:CreateDropdown({ Name = 'Base Block Type', List = getAvailableBlocks(), Function = function() end})
+    mFallbackBox = modelLoaderModule:CreateTextBox({ Name = 'Fallback Blocks (Comma Separated)', Default = "PlasticBlock, WoodBlock", Tooltip = "Used if you run out of the base block type."})
+    
+    mSpeedSlider = modelLoaderModule:CreateSlider({ Name = 'Spawn Speed', Min = 100, Max = 1000, Default = 500 })
+    mMaxModeToggle = modelLoaderModule:CreateToggle({ Name = 'Max Mode', Default = false, Function = function(val) if val then notify('Warning', 'Max mode may lag.', 5, 'alert') end end })
+
+end)
+
+
+
+
+
+
+
+
 
 
 
