@@ -1303,6 +1303,7 @@ end)
 
 
 
+
 run(function()
     local vape = shared.vape
     if not vape then return end
@@ -1414,29 +1415,37 @@ run(function()
                 end
 
             elseif shape == "Sphere" or shape == "Dome" then
-                local lat_steps = math.max(3, math.floor(sides / 2))
-                local start_i = (shape == "Dome") and math.floor(lat_steps/2) or 0
-                local total_parts = sides * (lat_steps - start_i)
-                local part_idx = 0
+                local lat_steps = math.max(4, math.floor(sides / 2))
+                local start_i = (shape == "Dome") and math.floor(lat_steps / 2) or 0
+                local seg_height = adjusted_R * (math.pi / lat_steps)
+                local temp_parts = {}
                 
+                -- Dynamic Step Calculation to prevent polar bunching
                 for i = start_i, lat_steps - 1 do
-                    local phi1 = -(math.pi/2) + (i * math.pi / lat_steps)
-                    local phi2 = -(math.pi/2) + ((i+1) * math.pi / lat_steps)
+                    local phi1 = -(math.pi / 2) + (i * math.pi / lat_steps)
+                    local phi2 = -(math.pi / 2) + ((i + 1) * math.pi / lat_steps)
                     local mid_phi = (phi1 + phi2) / 2
                     
-                    local seg_height = adjusted_R * (math.pi / lat_steps)
                     local r_lat = adjusted_R * math.cos(mid_phi)
-                    local seg_width = 2 * r_lat * math.tan(math.pi / sides)
                     local y_pos = adjusted_R * math.sin(mid_phi)
                     
-                    for j = 1, sides do
-                        part_idx = part_idx + 1
-                        local theta = j * (math.pi * 2) / sides
+                    -- Scale down sides proportionally to the circumference of the ring
+                    local ring_sides = math.max(4, math.round(sides * math.cos(mid_phi)))
+                    local seg_width = 2 * r_lat * math.tan(math.pi / ring_sides)
+                    
+                    for j = 1, ring_sides do
+                        local theta = j * (math.pi * 2) / ring_sides
                         local cf = baseOffset * CFrame.Angles(0, theta, 0) * CFrame.Angles(mid_phi, 0, 0) * CFrame.new(0, 0, -adjusted_R)
                         local size = Vector3.new(seg_width, seg_height, thick)
-                        local color = getColor(part_idx, total_parts, y_pos, adjusted_R)
-                        table.insert(parts, {CFrame = cf, Size = size, Color = color})
+                        table.insert(temp_parts, {CFrame = cf, Size = size, y_pos = y_pos})
                     end
+                end
+
+                -- Map out colors uniformly over the clean generation array
+                local total_parts = #temp_parts
+                for idx, pData in ipairs(temp_parts) do
+                    local color = getColor(idx, total_parts, pData.y_pos, adjusted_R)
+                    table.insert(parts, {CFrame = pData.CFrame, Size = pData.Size, Color = color})
                 end
 
             elseif shape == "Torus" then
@@ -1773,6 +1782,13 @@ run(function()
     maxModeToggle = shapeModule:CreateToggle({ Name = 'Max Mode (Lag Warning)', Default = false, Function = function() end })
 
 end)
+
+
+
+
+
+
+
 
 
 --3D FONT GENERATOR BE CAREFUL!!!
@@ -4134,7 +4150,441 @@ run(function()
 end)
 
 
+--GEAR GENERATOR!!!!!!
 
+
+
+
+
+run(function()
+    local vape = shared.vape
+    if not vape then return end
+
+    local HttpService = game:GetService("HttpService")
+    local repStorage = game:GetService("ReplicatedStorage")
+    local runService = game:GetService("RunService")
+    local lp = game:GetService("Players").LocalPlayer
+
+    local gearModule
+    local radSlider, holeSlider, heightSlider
+    local teethSlider, depthSlider, widthSlider
+    local layerSlider, twistSlider, taperSlider
+    local bodyDrop, spokeSlider, spokeThickSlider
+    local uprightToggle, colorDrop
+    local offX, offY, offZ
+    local blockDropdown, speedSlider, maxModeToggle
+    
+    local previewModelName = "Advanced_Gear_Preview"
+    local isPreviewing = false
+    local spinConnection = nil
+
+    local function notify(title, text, duration, typeTheme)
+        if vape.CreateNotification then vape:CreateNotification(title, text, duration or 5, typeTheme or 'info') end
+    end
+
+    local function getAvailableBlocks()
+        local blocks = {}
+        local buildingParts = repStorage:FindFirstChild("BuildingParts")
+        if buildingParts then
+            for _, v in ipairs(buildingParts:GetChildren()) do
+                if string.find(v.Name, "Block") then table.insert(blocks, v.Name) end
+            end
+        end
+        if #blocks == 0 then table.insert(blocks, "PlasticBlock") end
+        return blocks
+    end
+
+    local function getPlotZone()
+        local t = tostring(lp.Team)
+        local p = "WhiteZone"
+        if t=="red" then p="Really redZone" elseif t=="blue" then p="Really blueZone" elseif t=="black" then p="BlackZone" elseif t=="yellow" then p="New YellerZone" elseif t=="magenta" then p="MagentaZone" elseif t=="green" then p="CamoZone" end
+        return workspace:FindFirstChild(p)
+    end
+
+    local function getCount(name)
+        local d = lp:WaitForChild("Data"):FindFirstChild(name)
+        return (d and d:IsA("IntValue")) and d.Value or 0
+    end
+
+    -- =========================================================================
+    -- LAYERED HELICAL / BEVEL MATH ENGINE
+    -- =========================================================================
+    local function GenerateGearData()
+        local parts = {}
+        
+        -- Dimensions
+        local R = radSlider.Value
+        local holeR = math.min(holeSlider.Value, R - 2)
+        local H = heightSlider.Value
+        
+        -- Tooth Profile
+        local tCount = teethSlider.Value
+        local tDepth = depthSlider.Value
+        local tWidth = widthSlider.Value
+        
+        -- Advanced 3D Transforms
+        local layers = layerSlider.Value
+        local twist = math.rad(twistSlider.Value)
+        local taper = taperSlider.Value / 100 -- 0.0 to 1.0
+        
+        -- Internal Structure
+        local bStyle = bodyDrop.Value
+        local spokes = spokeSlider.Value
+        local sThick = spokeThickSlider.Value
+        
+        -- Alignment
+        local isUpright = uprightToggle.Enabled
+        local cStyle = colorDrop.Value
+        local baseOffset = CFrame.new(offX.Value, offY.Value, offZ.Value)
+        if isUpright then
+            baseOffset = baseOffset * CFrame.Angles(math.pi/2, 0, 0)
+        end
+
+        local layerH = H / layers
+
+        -- Color Generator
+        local function getColor(radiusPercent, anglePercent)
+            if cStyle == "Steel / Grey" then
+                local val = 0.5 + (radiusPercent * 0.2)
+                return Color3.new(val, val, val)
+            elseif cStyle == "Brass / Gold" then
+                local r, g, b = 0.8, 0.6, 0.2
+                return Color3.new(r - (radiusPercent*0.1), g - (radiusPercent*0.1), b - (radiusPercent*0.1))
+            elseif cStyle == "Neon Rainbow" then
+                return Color3.fromHSV(anglePercent % 1, 1, 1)
+            elseif cStyle == "Radial Rainbow" then
+                return Color3.fromHSV(radiusPercent % 1, 1, 1)
+            end
+            return Color3.new(1, 1, 1)
+        end
+
+        -- Core Generation Loop
+        for l = 1, layers do
+            local yPos = -H/2 + (l - 0.5) * layerH
+            local layerProgress = (layers > 1) and ((l - 1) / (layers - 1)) or 0
+            
+            -- Dynamic Twist & Taper for Helical/Bevel Effects
+            local curTwist = twist * layerProgress
+            local curR = math.max(1, R * (1 - (taper * layerProgress)))
+            local curHole = math.max(0, holeR * (1 - (taper * layerProgress)))
+            
+            -- Prevent hole from overtaking radius due to taper
+            curHole = math.min(curHole, curR - 1)
+
+            -- 1. Generate Hub & Body/Spokes
+            if bStyle == "Solid" then
+                local bodyWidth = curR - curHole
+                if bodyWidth > 0.5 then
+                    local midR = curHole + (bodyWidth / 2)
+                    -- Adaptive sides based on circumference to prevent bunching
+                    local segments = math.max(8, math.floor(midR * 1.2))
+                    for i = 1, segments do
+                        local angPercent = i / segments
+                        local angle = curTwist + (angPercent * math.pi * 2)
+                        local w = 2 * midR * math.tan(math.pi / segments)
+                        
+                        local cf = baseOffset * CFrame.Angles(0, angle, 0) * CFrame.new(0, yPos, -midR)
+                        table.insert(parts, {CFrame = cf, Size = Vector3.new(w, layerH, bodyWidth), Color = getColor(0.5, angPercent)})
+                    end
+                end
+            elseif bStyle == "Spokes" then
+                local rimThick = math.max(2, curR * 0.15)
+                local actualRimR = math.max(0.1, curR - rimThick/2)
+                local hubR = math.max(1, curHole + 2)
+                
+                -- Inner Hub
+                local hubWidth = hubR - curHole
+                if hubWidth > 0.5 then
+                    local hSegs = math.max(8, math.floor(curHole * 1.2))
+                    for i = 1, hSegs do
+                        local angPercent = i / hSegs
+                        local angle = curTwist + (angPercent * math.pi * 2)
+                        local w = 2 * (curHole + hubWidth/2) * math.tan(math.pi / hSegs)
+                        local cf = baseOffset * CFrame.Angles(0, angle, 0) * CFrame.new(0, yPos, -(curHole + hubWidth/2))
+                        table.insert(parts, {CFrame = cf, Size = Vector3.new(w, layerH, hubWidth), Color = getColor(0.1, angPercent)})
+                    end
+                end
+                
+                -- Outer Rim
+                if actualRimR > hubR then
+                    local rSegs = math.max(12, math.floor(curR * 1.2))
+                    for i = 1, rSegs do
+                        local angPercent = i / rSegs
+                        local angle = curTwist + (angPercent * math.pi * 2)
+                        local w = 2 * actualRimR * math.tan(math.pi / rSegs)
+                        local cf = baseOffset * CFrame.Angles(0, angle, 0) * CFrame.new(0, yPos, -actualRimR)
+                        table.insert(parts, {CFrame = cf, Size = Vector3.new(w, layerH, rimThick), Color = getColor(0.8, angPercent)})
+                    end
+                end
+                
+                -- Connective Spokes
+                local spokeLen = (curR - rimThick) - hubR
+                if spokeLen > 0.5 then
+                    local sMid = hubR + (spokeLen / 2)
+                    for i = 1, spokes do
+                        local angPercent = i / spokes
+                        local angle = curTwist + (angPercent * math.pi * 2)
+                        local cf = baseOffset * CFrame.Angles(0, angle, 0) * CFrame.new(0, yPos, -sMid)
+                        table.insert(parts, {CFrame = cf, Size = Vector3.new(sThick, layerH, spokeLen), Color = getColor(0.5, angPercent)})
+                    end
+                end
+            end
+
+            -- 2. Generate Teeth
+            for i = 1, tCount do
+                local angPercent = i / tCount
+                local angle = curTwist + (angPercent * math.pi * 2)
+                local toothDist = curR + (tDepth / 2)
+                
+                local cf = baseOffset * CFrame.Angles(0, angle, 0) * CFrame.new(0, yPos, -toothDist)
+                table.insert(parts, {CFrame = cf, Size = Vector3.new(tWidth, layerH, tDepth), Color = getColor(1.0, angPercent)})
+            end
+        end
+
+        return parts
+    end
+
+    local function LiveUpdatePreview()
+        if not isPreviewing then return end
+        
+        local plotZone = getPlotZone()
+        if not plotZone then return end
+
+        if workspace:FindFirstChild(previewModelName) then workspace[previewModelName]:Destroy() end
+        if spinConnection then spinConnection:Disconnect() end
+
+        local previewModel = Instance.new("Model")
+        previewModel.Name = previewModelName
+        
+        -- Create a central pivot for spinning
+        local primary = Instance.new("Part")
+        primary.Anchored = true
+        primary.CanCollide = false
+        primary.Transparency = 1
+        primary.Size = Vector3.new(1,1,1)
+        local surfaceY = plotZone.Size.Y / 2
+        
+        local gearCenterY = (radSlider.Value + depthSlider.Value + 10)
+        local isUpright = uprightToggle.Enabled
+        local pivotCFrame = plotZone.CFrame * CFrame.new(0, surfaceY + (isUpright and gearCenterY or heightSlider.Value/2 + 5), 0)
+        
+        primary.CFrame = pivotCFrame
+        primary.Parent = previewModel
+        previewModel.PrimaryPart = primary
+
+        local partsData = GenerateGearData()
+        
+        for _, pData in ipairs(partsData) do
+            local ghost = Instance.new("Part")
+            ghost.Anchored = true
+            ghost.CanCollide = false
+            ghost.Transparency = 0.25
+            ghost.Material = Enum.Material.SmoothPlastic
+            ghost.Color = pData.Color
+            ghost.Size = pData.Size
+            
+            -- Weld to pivot conceptually by saving offset
+            ghost.CFrame = pivotCFrame:ToWorldSpace(pData.CFrame)
+            ghost.Parent = previewModel
+            
+            local weld = Instance.new("WeldConstraint")
+            weld.Part0 = primary
+            weld.Part1 = ghost
+            weld.Parent = ghost
+        end
+
+        previewModel.Parent = workspace
+
+        -- Spin Engine
+        local speed = 1.5
+        spinConnection = runService.RenderStepped:Connect(function(dt)
+            if not isPreviewing or not previewModel.PrimaryPart then
+                if spinConnection then spinConnection:Disconnect() end
+                return
+            end
+            local currentPivot = previewModel:GetPivot()
+            local rotation = CFrame.Angles(0, speed * dt, 0)
+            if isUpright then rotation = CFrame.Angles(speed * dt, 0, 0) end
+            
+            previewModel:PivotTo(currentPivot * rotation)
+        end)
+    end
+
+    -- =========================================================================
+    -- BUILD PROCESS
+    -- =========================================================================
+    gearModule = vape.Categories['BABFT Tools']:CreateModule({
+        Name = 'Advanced Gears',
+        Tooltip = 'Generates highly complex mechanical gears including Helical and Bevel types.',
+        Function = function(callback)
+            if not callback then return end
+            
+            task.spawn(function()
+                local partsData = GenerateGearData()
+                local totalNeeded = #partsData
+                if totalNeeded == 0 then gearModule:Toggle(); return end
+
+                local function getTool(n) return lp.Backpack:FindFirstChild(n) or (lp.Character and lp.Character:FindFirstChild(n)) end
+
+                local buildTool = getTool("BuildingTool")
+                local scaleTool = getTool("ScalingTool")
+                local paintTool = getTool("PaintingTool")
+
+                if not buildTool or not scaleTool then
+                    notify('Error', 'Missing Building or Scaling Tool!', 5, 'alert')
+                    gearModule:Toggle() return
+                end
+
+                local buildRF = buildTool:WaitForChild("RF")
+                local scaleRF = scaleTool:WaitForChild("RF")
+                local plotZone = getPlotZone()
+                local playerBlocksFolder = workspace:WaitForChild("Blocks"):WaitForChild(lp.Name)
+
+                local baseBlock = blockDropdown.Value
+                local consumedTracker = 0
+
+                notify('Gear Engine', 'Spawning ' .. totalNeeded .. ' precision parts...', 5, 'info')
+                pcall(function() workspace:WaitForChild("InstaLoadFunction", 1):InvokeServer() end)
+
+                local spawnDelayRate = 1 / speedSlider.Value
+                local spawnBatchSize = math.max(1, math.ceil(0.015 / spawnDelayRate))
+                if maxModeToggle.Enabled then spawnDelayRate = 0; spawnBatchSize = 999999 end
+
+                local paintArgs = {}
+                local threadsCompleted = 0
+                local surfaceY = plotZone.Size.Y / 2
+                
+                local gearCenterY = (radSlider.Value + depthSlider.Value + 10)
+                local pivotOffset = CFrame.new(0, surfaceY + (uprightToggle.Enabled and gearCenterY or heightSlider.Value/2 + 2), 0)
+
+                local unprocessedBlocks = {}
+                local blockAddedConn = playerBlocksFolder.ChildAdded:Connect(function(b)
+                    if not unprocessedBlocks[b.Name] then unprocessedBlocks[b.Name] = {} end
+                    table.insert(unprocessedBlocks[b.Name], b)
+                end)
+                gearModule:Clean(blockAddedConn)
+
+                for i, pData in ipairs(partsData) do
+                    if not gearModule.Enabled then break end
+
+                    if getCount(baseBlock) <= consumedTracker then
+                        notify('Error', 'Ran out of blocks at ' .. i .. '/' .. totalNeeded, 10, 'alert')
+                        break
+                    end
+                    consumedTracker = consumedTracker + 1
+
+                    local absoluteTargetCFrame = plotZone.CFrame:ToWorldSpace(pivotOffset * pData.CFrame)
+                    
+                    task.spawn(function()
+                        local currentTotalCount = getCount(baseBlock)
+                        buildRF:InvokeServer(baseBlock, currentTotalCount, plotZone, pivotOffset * pData.CFrame, true, absoluteTargetCFrame, false)
+                        
+                        local spawnedBlock = nil
+                        for attempt = 1, 15 do 
+                            if not gearModule.Enabled then break end
+                            local list = unprocessedBlocks[baseBlock]
+                            if list and #list > 0 then
+                                for idx, b in ipairs(list) do
+                                    if b.Parent and (b:GetPivot().Position - absoluteTargetCFrame.Position).Magnitude < 10 then
+                                        spawnedBlock = b
+                                        table.remove(list, idx)
+                                        break
+                                    end
+                                end
+                            end
+                            if spawnedBlock then break end
+                            task.wait() 
+                        end
+                        
+                        if spawnedBlock and gearModule.Enabled then
+                            task.spawn(function() scaleRF:InvokeServer(spawnedBlock, pData.Size, absoluteTargetCFrame) end)
+                            if colorDrop.Value ~= "None" then
+                                table.insert(paintArgs, {spawnedBlock, pData.Color})
+                            end
+                        end
+                        threadsCompleted = threadsCompleted + 1
+                    end)
+                    
+                    if spawnDelayRate > 0 then task.wait(spawnDelayRate) else
+                        if i % spawnBatchSize == 0 then task.wait() end
+                    end
+                end
+
+                while threadsCompleted < totalNeeded and gearModule.Enabled do task.wait() end
+                
+                if paintTool and #paintArgs > 0 then
+                    notify('Painting', 'Applying Metallic/Gradient Profiles...', 5, 'info')
+                    task.spawn(function() paintTool:WaitForChild("RF"):InvokeServer(paintArgs) end)
+                end
+
+                notify('Gear Engine', '✅ Mechanical Build Complete!', 5, 'info')
+                gearModule:Toggle()
+            end)
+        end
+    })
+
+    -- =========================================================================
+    -- UI COMPONENTS & LISTENERS
+    -- =========================================================================
+    gearModule:CreateButton({
+        Name = 'Preview Spinning Gear',
+        Function = function()
+            isPreviewing = true
+            notify('Preview', 'Live spinning animation activated.', 3, 'info')
+            LiveUpdatePreview()
+        end
+    })
+
+    gearModule:CreateButton({
+        Name = 'Clear Preview',
+        Function = function()
+            isPreviewing = false
+            if spinConnection then spinConnection:Disconnect() end
+            if workspace:FindFirstChild(previewModelName) then workspace[previewModelName]:Destroy() end
+        end
+    })
+
+    -- Dimensions
+    radSlider = gearModule:CreateSlider({ Name = 'Base Radius', Min = 10, Max = 150, Default = 30, Function = LiveUpdatePreview })
+    holeSlider = gearModule:CreateSlider({ Name = 'Inner Hole Radius', Min = 0, Max = 100, Default = 10, Function = LiveUpdatePreview })
+    heightSlider = gearModule:CreateSlider({ Name = 'Gear Thickness', Min = 2, Max = 100, Default = 10, Function = LiveUpdatePreview })
+    
+    -- Teeth Profile
+    teethSlider = gearModule:CreateSlider({ Name = 'Teeth Count', Min = 4, Max = 100, Default = 16, Function = LiveUpdatePreview })
+    depthSlider = gearModule:CreateSlider({ Name = 'Tooth Depth', Min = 1, Max = 50, Default = 6, Function = LiveUpdatePreview })
+    widthSlider = gearModule:CreateSlider({ Name = 'Tooth Width', Min = 1, Max = 30, Default = 4, Function = LiveUpdatePreview })
+    
+    -- Advanced 3D Engine
+    layerSlider = gearModule:CreateSlider({ Name = 'Vertical Layers (1=Flat, 10+=3D)', Min = 1, Max = 30, Default = 1, Function = LiveUpdatePreview, Tooltip = 'Increase this to enable smooth 3D Helical/Corkscrew and Bevel effects.' })
+    twistSlider = gearModule:CreateSlider({ Name = 'Helical Twist Angle', Min = -180, Max = 180, Default = 0, Function = LiveUpdatePreview, Tooltip = 'Requires >1 Layers. Twists the gear into a corkscrew.' })
+    taperSlider = gearModule:CreateSlider({ Name = 'Bevel Taper % (Cone)', Min = 0, Max = 100, Default = 0, Function = LiveUpdatePreview, Tooltip = 'Requires >1 Layers. Shrinks the top radius.' })
+
+    -- Internal Structure
+    bodyDrop = gearModule:CreateDropdown({ 
+        Name = 'Body Style', 
+        List = {'Solid', 'Spokes'}, 
+        Function = function(val)
+            spokeSlider.Object.Visible = (val == 'Spokes')
+            spokeThickSlider.Object.Visible = (val == 'Spokes')
+            LiveUpdatePreview()
+        end 
+    })
+    spokeSlider = gearModule:CreateSlider({ Name = 'Spoke Count', Min = 2, Max = 24, Default = 6, Function = LiveUpdatePreview, Visible = false })
+    spokeThickSlider = gearModule:CreateSlider({ Name = 'Spoke Thickness', Min = 1, Max = 20, Default = 3, Function = LiveUpdatePreview, Visible = false })
+
+    -- Build Modifiers
+    uprightToggle = gearModule:CreateToggle({ Name = 'Stand Upright (For Vehicles)', Default = false, Function = LiveUpdatePreview })
+    colorDrop = gearModule:CreateDropdown({ Name = 'Color Profile', List = {'None', 'Steel / Grey', 'Brass / Gold', 'Neon Rainbow', 'Radial Rainbow'}, Function = LiveUpdatePreview })
+
+    offX = gearModule:CreateSlider({ Name = 'Offset X', Min = -500, Max = 500, Default = 0, Function = LiveUpdatePreview })
+    offY = gearModule:CreateSlider({ Name = 'Offset Y', Min = -500, Max = 500, Default = 0, Function = LiveUpdatePreview })
+    offZ = gearModule:CreateSlider({ Name = 'Offset Z', Min = -500, Max = 500, Default = 0, Function = LiveUpdatePreview })
+
+    blockDropdown = gearModule:CreateDropdown({ Name = 'Block Type', List = getAvailableBlocks(), Function = function() end})
+    speedSlider = gearModule:CreateSlider({ Name = 'Spawn Speed', Min = 100, Max = 1000, Default = 500, Function = function() end })
+    maxModeToggle = gearModule:CreateToggle({ Name = 'Max Mode (Lag Warning)', Default = false, Function = function() end })
+
+end)
 
 
 
