@@ -4213,7 +4213,7 @@ run(function()
         local mType = typeDrop.Value
         local mScale = masterScaleSlider.Value
         
-        -- Master-scaled base dimensions
+        -- Master-scaled base dimensions applied globally
         local R = radSlider.Value * mScale
         local holeR = math.min(holeSlider.Value * mScale, R - (2 * mScale))
         local H = heightSlider.Value * mScale
@@ -4335,7 +4335,7 @@ run(function()
             local shaftRad = shaftRadSlider.Value * mScale
             local threadDepth = threadDepthSlider.Value * mScale
             local threadThick = threadThickSlider.Value * mScale
-            local totalTurns = turnsSlider.Value
+            local totalTurns = math.max(0.1, turnsSlider.Value)
 
             -- 1. Generate Central Core Shaft
             local coreLayers = math.max(4, layers)
@@ -4353,20 +4353,29 @@ run(function()
                 end
             end
 
-            -- 2. Generate Helical Flight (The Threading)
-            -- Multiplied fidelity tracking along the spiral spine
-            local threadSteps = math.max(32, coreLayers * 12)
+            -- 2. Generate Mathematically Tilted Helical Threading
+            local threadSteps = math.max(45, coreLayers * 15)
+            local spiralRadius = shaftRad + (threadDepth / 2)
+            
+            -- Calculate precise pitch slope tilt angle along the helix path
+            local totalCircumferenceTravel = totalTurns * (2 * math.pi * spiralRadius)
+            local pitchAngle = math.atan2(H, totalCircumferenceTravel)
+
             for i = 0, threadSteps do
                 local progress = i / threadSteps
                 local yPos = -H/2 + (progress * H)
                 local threadAngle = progress * totalTurns * math.pi * 2
                 
-                -- Determine angular width segment length
-                local spiralRadius = shaftRad + (threadDepth / 2)
                 local arcStepWidth = (2 * math.pi * spiralRadius) / (threadSteps / totalTurns)
-                local structuralWidth = math.max(0.5, arcStepWidth * 1.1) -- Slight overlap prevents mesh cracks
+                local structuralWidth = math.max(0.4, arcStepWidth * 1.15) -- Overlap prevents flight gaps
                 
-                local cf = baseOffset * CFrame.new(0, yPos, 0) * CFrame.Angles(0, threadAngle, 0) * CFrame.new(0, 0, -spiralRadius)
+                -- Base position outer offset transformed by pitch tilt around local Z-axis
+                local cf = baseOffset 
+                    * CFrame.new(0, yPos, 0) 
+                    * CFrame.Angles(0, threadAngle, 0) 
+                    * CFrame.new(0, 0, -spiralRadius) 
+                    * CFrame.Angles(0, 0, pitchAngle)
+
                 table.insert(parts, {CFrame = cf, Size = Vector3.new(structuralWidth, threadThick, threadDepth), Color = getColor(0.9, progress)})
             end
         end
@@ -4375,7 +4384,7 @@ run(function()
     end
 
     local function ClearPreview()
-        if spinConnection then spinConnection:Disconnect() end
+        if spinConnection then spinConnection:Disconnect(); spinConnection = nil end
         if workspace:FindFirstChild(previewModelName) then workspace[previewModelName]:Destroy() end
     end
 
@@ -4426,16 +4435,20 @@ run(function()
 
         previewModel.Parent = workspace
 
-        -- Spin Engine Loop
-        local spinSpeed = 1.2
+        -- Axle-Aligned Precision Rotation Loop
+        local spinSpeed = 1.4
         spinConnection = runService.RenderStepped:Connect(function(dt)
-            if not previewToggle.Enabled or not previewModel.PrimaryPart then
+            if not previewToggle.Enabled or not previewModel or not previewModel.PrimaryPart then
                 ClearPreview()
                 return
             end
             local currentPivot = previewModel:GetPivot()
+            
+            -- If laid flat, rotate around vertical Y. If upright, spin around its horizontal Z axle.
             local rotation = CFrame.Angles(0, spinSpeed * dt, 0)
-            if isUpright then rotation = CFrame.Angles(spinSpeed * dt, 0, 0) end
+            if isUpright then 
+                rotation = CFrame.Angles(0, 0, spinSpeed * dt) 
+            end
             
             previewModel:PivotTo(currentPivot * rotation)
         end)
@@ -4556,8 +4569,6 @@ run(function()
     -- =========================================================================
     -- DYNAMIC UI COMPONENT ARCHITECTURE
     -- =========================================================================
-    
-    -- Dynamic Layout Trigger
     typeDrop = gearModule:CreateDropdown({
         Name = 'Mechanism Type',
         List = {'Standard / Helical Gear', 'Corkscrew / Precision Screw'},
@@ -4599,12 +4610,12 @@ run(function()
         end
     })
 
-    -- Global Sizing & Proportions
-    masterScaleSlider = gearModule:CreateSlider({ Name = 'Master Scale Multiplier (x)', Min = 1, Max = 5, Default = 1, Function = LiveUpdatePreview, Tooltip = 'Scales up the entire structural footprint uniformly.' })
-    heightSlider = gearModule:CreateSlider({ Name = 'Total Height / Thickness', Min = 4, Max = 200, Default = 15, Function = LiveUpdatePreview })
-    layerSlider = gearModule:CreateSlider({ Name = 'Engine Precision Layers', Min = 1, Max = 40, Default = 1, Function = LiveUpdatePreview, Tooltip = 'Higher counts create smoother curves and denser screw threads.' })
+    -- Universal Master Scaling & Dimensions
+    masterScaleSlider = gearModule:CreateSlider({ Name = 'Master Scale Multiplier (x)', Min = 1, Max = 10, Default = 1, Function = LiveUpdatePreview, Tooltip = 'Scales up the dimensions of the entire model uniformly.' })
+    heightSlider = gearModule:CreateSlider({ Name = 'Total Height / Length', Min = 4, Max = 200, Default = 15, Function = LiveUpdatePreview })
+    layerSlider = gearModule:CreateSlider({ Name = 'Engine Precision Layers', Min = 1, Max = 40, Default = 1, Function = LiveUpdatePreview, Tooltip = 'Higher counts create smoother helical lines and dense threading.' })
 
-    -- Gear Modifiers Block
+    -- Gear Variant Options Block
     radSlider = gearModule:CreateSlider({ Name = 'Gear Radius', Min = 10, Max = 150, Default = 30, Function = LiveUpdatePreview })
     holeSlider = gearModule:CreateSlider({ Name = 'Center Hole Radius', Min = 0, Max = 100, Default = 8, Function = LiveUpdatePreview })
     teethSlider = gearModule:CreateSlider({ Name = 'Teeth Count', Min = 4, Max = 80, Default = 16, Function = LiveUpdatePreview })
@@ -4627,13 +4638,13 @@ run(function()
     spokeSlider = gearModule:CreateSlider({ Name = 'Spoke Structural Count', Min = 2, Max = 16, Default = 6, Function = LiveUpdatePreview, Visible = false })
     spokeThickSlider = gearModule:CreateSlider({ Name = 'Spoke Webbing Width', Min = 1, Max = 15, Default = 3, Function = LiveUpdatePreview, Visible = false })
 
-    -- Corkscrew Modifiers Block
+    -- Corkscrew Variant Options Block
     shaftRadSlider = gearModule:CreateSlider({ Name = 'Central Shaft Radius', Min = 2, Max = 50, Default = 6, Function = LiveUpdatePreview, Visible = false })
     threadDepthSlider = gearModule:CreateSlider({ Name = 'Screw Flight Depth', Min = 2, Max = 60, Default = 12, Function = LiveUpdatePreview, Visible = false })
     threadThickSlider = gearModule:CreateSlider({ Name = 'Screw Flight Thickness', Min = 1, Max = 20, Default = 2, Function = LiveUpdatePreview, Visible = false })
     turnsSlider = gearModule:CreateSlider({ Name = 'Thread Turn Density (360°)', Min = 1, Max = 15, Default = 3, Function = LiveUpdatePreview, Visible = false })
 
-    -- Positional Deployment Modifiers
+    -- Placement Filters & Global Vectors
     uprightToggle = gearModule:CreateToggle({ Name = 'Stand Upright (For Axles)', Default = false, Function = LiveUpdatePreview })
     colorDrop = gearModule:CreateDropdown({ Name = 'Material Color Profile', List = {'None', 'Steel / Grey', 'Brass / Gold', 'Neon Rainbow', 'Radial Rainbow'}, Function = LiveUpdatePreview })
 
@@ -4645,12 +4656,389 @@ run(function()
     speedSlider = gearModule:CreateSlider({ Name = 'Assembly Speed', Min = 100, Max = 1000, Default = 500, Function = function() end })
     maxModeToggle = gearModule:CreateToggle({ Name = 'Instant Max Mode (Lag Risk)', Default = false, Function = function() end })
 
-    -- Initialize Default UI States
+    -- Initialize Framework Defaults safely
     task.spawn(function()
         task.wait(0.2)
         if typeDrop and typeDrop.Function then typeDrop.Function(typeDrop.Value) end
     end)
 end)
+
+
+--CONE GENERATOR!!!!!!
+
+
+
+
+
+
+
+
+
+run(function()
+    local vape = shared.vape
+    if not vape then return end
+
+    local repStorage = game:GetService("ReplicatedStorage")
+    local runService = game:GetService("RunService")
+    local lp = game:GetService("Players").LocalPlayer
+
+    local coneModule
+    local styleDrop, scaleSlider, baseRadSlider, topRadSlider, heightSlider
+    local curveSlider, layerSlider, segmentSlider, thickSlider
+    local uprightToggle, colorDrop, previewToggle
+    local offX, offY, offZ
+    local blockDropdown, speedSlider, maxModeToggle
+    
+    local previewModelName = "Advanced_Cone_Preview"
+    local spinConnection = nil
+
+    local function notify(title, text, duration, typeTheme)
+        if vape.CreateNotification then vape:CreateNotification(title, text, duration or 5, typeTheme or 'info') end
+    end
+
+    local function getAvailableBlocks()
+        local blocks = {}
+        local buildingParts = repStorage:FindFirstChild("BuildingParts")
+        if buildingParts then
+            for _, v in ipairs(buildingParts:GetChildren()) do
+                if string.find(v.Name, "Block") then table.insert(blocks, v.Name) end
+            end
+        end
+        if #blocks == 0 then table.insert(blocks, "PlasticBlock") end
+        return blocks
+    end
+
+    local function getPlotZone()
+        local t = tostring(lp.Team)
+        local p = "WhiteZone"
+        local teams = {red="Really redZone", blue="Really blueZone", black="BlackZone", yellow="New YellerZone", magenta="MagentaZone", green="CamoZone"}
+        return workspace:FindFirstChild(teams[t] or p)
+    end
+
+    local function getCount(name)
+        local d = lp:WaitForChild("Data"):FindFirstChild(name)
+        return (d and d:IsA("IntValue")) and d.Value or 0
+    end
+
+    -- =========================================================================
+    -- DYNAMIC CONE / HULL GENERATION ENGINE
+    -- =========================================================================
+    local function GenerateConeData()
+        local parts = {}
+        
+        local mScale = scaleSlider.Value
+        local H = heightSlider.Value * mScale
+        local R_base = baseRadSlider.Value * mScale
+        local R_top = topRadSlider.Value * mScale
+        
+        local L = layerSlider.Value
+        local S = segmentSlider.Value
+        local isHollow = (styleDrop.Value == 'Hollow (Smooth Shell)')
+        local T = math.max(0.1, thickSlider.Value * mScale)
+
+        -- Map the UI slider (-100 to 100) to an exponential curve power
+        -- Negative = Convex (Bulges out), Positive = Concave (Caves in)
+        local cVal = curveSlider.Value
+        local p = 1
+        if cVal > 0 then
+            p = 1 + (cVal / 20) -- Scales up to power of 6
+        elseif cVal < 0 then
+            p = 1 / (1 + (-cVal) / 20) -- Scales down to power of ~0.16
+        end
+
+        local baseOffset = CFrame.new(offX.Value, offY.Value, offZ.Value)
+        if uprightToggle.Enabled then
+            baseOffset = baseOffset * CFrame.Angles(math.pi/2, 0, 0)
+        end
+
+        local function getColor(yPercent, yawPercent)
+            local cStyle = colorDrop.Value
+            if cStyle == "Vertical Rainbow" then return Color3.fromHSV(yPercent, 1, 1)
+            elseif cStyle == "Radial Rainbow" then return Color3.fromHSV(yawPercent, 1, 1)
+            elseif cStyle == "Steel / Grey" then return Color3.new(0.6, 0.6, 0.65)
+            elseif cStyle == "Aerospace White" then return Color3.new(0.95, 0.95, 0.95)
+            end
+            return Color3.new(1, 1, 1)
+        end
+
+        if isSolid then
+            -- Standard horizontal stepped slices for solid internals
+            local dH = H / L
+            for l = 1, L do
+                local t = (l - 0.5) / L
+                local yPos = -H/2 + (t * H)
+                local r = R_top + (R_base - R_top) * ((1 - t)^p)
+                r = math.max(0.1, r)
+                
+                for s = 1, S do
+                    local yaw = (s / S) * math.pi * 2
+                    local w = 2 * r * math.tan(math.pi / S)
+                    local cf = baseOffset * CFrame.new(0, yPos, 0) * CFrame.Angles(0, yaw, 0) * CFrame.new(0, 0, -r/2)
+                    
+                    table.insert(parts, {CFrame = cf, Size = Vector3.new(w, dH, r), Color = getColor(t, s/S)})
+                end
+            end
+        else
+            -- Advanced Pitched Shell Engine (Mathematically flush blocks)
+            for l = 1, L do
+                local t1 = (l - 1) / L
+                local t2 = l / L
+                
+                local y1 = -H/2 + (t1 * H)
+                local y2 = -H/2 + (t2 * H)
+                local y_mid = (y1 + y2) / 2
+                
+                local r1 = R_top + (R_base - R_top) * ((1 - t1)^p)
+                local r2 = R_top + (R_base - R_top) * ((1 - t2)^p)
+                r1 = math.max(0.01, r1)
+                r2 = math.max(0.01, r2)
+                
+                local r_mid = (r1 + r2) / 2
+                
+                local dy = y2 - y1
+                local dr = r2 - r1
+                
+                -- Pythagorean Slant Height
+                local slantY = math.sqrt(dy^2 + dr^2)
+                -- Tangent Angle for block pitch alignment
+                local pitchAngle = math.atan2(-dr, dy)
+                
+                for s = 1, S do
+                    local yaw = (s / S) * math.pi * 2
+                    local w1 = 2 * r1 * math.tan(math.pi / S)
+                    local w2 = 2 * r2 * math.tan(math.pi / S)
+                    local w_mid = math.max(0.05, (w1 + w2) / 2)
+                    
+                    local cf = baseOffset 
+                        * CFrame.new(0, y_mid, 0) 
+                        * CFrame.Angles(0, yaw, 0) 
+                        * CFrame.new(0, 0, -r_mid)
+                        * CFrame.Angles(pitchAngle, 0, 0) -- Slant the block flush to the curve
+                        
+                    table.insert(parts, {CFrame = cf, Size = Vector3.new(w_mid, slantY, T), Color = getColor((t1+t2)/2, s/S)})
+                end
+            end
+        end
+
+        return parts
+    end
+
+    local function ClearPreview()
+        if spinConnection then spinConnection:Disconnect() end
+        if workspace:FindFirstChild(previewModelName) then workspace[previewModelName]:Destroy() end
+    end
+
+    local function LiveUpdatePreview()
+        if not previewToggle.Enabled then ClearPreview(); return end
+        
+        local plotZone = getPlotZone()
+        if not plotZone then return end
+
+        ClearPreview()
+
+        local previewModel = Instance.new("Model")
+        previewModel.Name = previewModelName
+        
+        local primary = Instance.new("Part")
+        primary.Anchored = true
+        primary.CanCollide = false
+        primary.Transparency = 1
+        primary.Size = Vector3.new(1,1,1)
+        
+        local surfaceY = plotZone.Size.Y / 2
+        local pivotCFrame = plotZone.CFrame * CFrame.new(0, surfaceY + ((heightSlider.Value * scaleSlider.Value)/2 + 5), 0)
+        
+        primary.CFrame = pivotCFrame
+        primary.Parent = previewModel
+        previewModel.PrimaryPart = primary
+
+        local partsData = GenerateConeData()
+        
+        for _, pData in ipairs(partsData) do
+            local ghost = Instance.new("Part")
+            ghost.Anchored = true
+            ghost.CanCollide = false
+            ghost.Transparency = 0.3
+            ghost.Material = Enum.Material.SmoothPlastic
+            ghost.Color = pData.Color
+            ghost.Size = pData.Size
+            ghost.CFrame = pivotCFrame:ToWorldSpace(pData.CFrame)
+            ghost.Parent = previewModel
+        end
+
+        previewModel.Parent = workspace
+
+        local spinSpeed = 1.0
+        spinConnection = runService.RenderStepped:Connect(function(dt)
+            if not previewToggle.Enabled or not previewModel.PrimaryPart then
+                ClearPreview()
+                return
+            end
+            previewModel:PivotTo(previewModel:GetPivot() * CFrame.Angles(0, spinSpeed * dt, 0))
+        end)
+    end
+
+    -- =========================================================================
+    -- SPAWN & MODULE LOGIC
+    -- =========================================================================
+    coneModule = vape.Categories['BABFT Tools']:CreateModule({
+        Name = 'Parametric Cone & Hull Engine',
+        Tooltip = 'Generates concave/convex cones, rocket noses, and smooth curved hulls.',
+        Function = function(callback)
+            if not callback then return end
+            
+            task.spawn(function()
+                local partsData = GenerateConeData()
+                local totalNeeded = #partsData
+                if totalNeeded == 0 then coneModule:Toggle(); return end
+
+                local function getTool(n) return lp.Backpack:FindFirstChild(n) or (lp.Character and lp.Character:FindFirstChild(n)) end
+                local buildTool = getTool("BuildingTool")
+                local scaleTool = getTool("ScalingTool")
+                local paintTool = getTool("PaintingTool")
+
+                if not buildTool or not scaleTool then
+                    notify('Error', 'Missing Building or Scaling Tool!', 5, 'alert')
+                    coneModule:Toggle() return
+                end
+
+                local buildRF = buildTool:WaitForChild("RF")
+                local scaleRF = scaleTool:WaitForChild("RF")
+                local plotZone = getPlotZone()
+                local playerBlocksFolder = workspace:WaitForChild("Blocks"):WaitForChild(lp.Name)
+
+                local baseBlock = blockDropdown.Value
+                local consumedTracker = 0
+
+                notify('Hull Engine', 'Spawning ' .. totalNeeded .. ' curved structural pieces...', 5, 'info')
+                pcall(function() workspace:WaitForChild("InstaLoadFunction", 1):InvokeServer() end)
+
+                local spawnDelayRate = 1 / speedSlider.Value
+                local spawnBatchSize = math.max(1, math.ceil(0.015 / spawnDelayRate))
+                if maxModeToggle.Enabled then spawnDelayRate = 0; spawnBatchSize = 999999 end
+
+                local paintArgs = {}
+                local threadsCompleted = 0
+                local surfaceY = plotZone.Size.Y / 2
+                local pivotOffset = CFrame.new(0, surfaceY + ((heightSlider.Value * scaleSlider.Value)/2 + 2), 0)
+
+                local unprocessedBlocks = {}
+                local blockAddedConn = playerBlocksFolder.ChildAdded:Connect(function(b)
+                    if not unprocessedBlocks[b.Name] then unprocessedBlocks[b.Name] = {} end
+                    table.insert(unprocessedBlocks[b.Name], b)
+                end)
+                coneModule:Clean(blockAddedConn)
+
+                for i, pData in ipairs(partsData) do
+                    if not coneModule.Enabled then break end
+
+                    if getCount(baseBlock) <= consumedTracker then
+                        notify('Error', 'Ran out of blocks! ' .. i .. '/' .. totalNeeded, 10, 'alert')
+                        break
+                    end
+                    consumedTracker = consumedTracker + 1
+
+                    local absoluteTargetCFrame = plotZone.CFrame:ToWorldSpace(pivotOffset * pData.CFrame)
+                    
+                    task.spawn(function()
+                        local currentTotalCount = getCount(baseBlock)
+                        buildRF:InvokeServer(baseBlock, currentTotalCount, plotZone, pivotOffset * pData.CFrame, true, absoluteTargetCFrame, false)
+                        
+                        local spawnedBlock = nil
+                        for attempt = 1, 15 do 
+                            if not coneModule.Enabled then break end
+                            local list = unprocessedBlocks[baseBlock]
+                            if list and #list > 0 then
+                                for idx, b in ipairs(list) do
+                                    if b.Parent and (b:GetPivot().Position - absoluteTargetCFrame.Position).Magnitude < 10 then
+                                        spawnedBlock = b
+                                        table.remove(list, idx)
+                                        break
+                                    end
+                                end
+                            end
+                            if spawnedBlock then break end
+                            task.wait() 
+                        end
+                        
+                        if spawnedBlock and coneModule.Enabled then
+                            task.spawn(function() scaleRF:InvokeServer(spawnedBlock, pData.Size, absoluteTargetCFrame) end)
+                            if colorDrop.Value ~= "None" then
+                                table.insert(paintArgs, {spawnedBlock, pData.Color})
+                            end
+                        end
+                        threadsCompleted = threadsCompleted + 1
+                    end)
+                    
+                    if spawnDelayRate > 0 then task.wait(spawnDelayRate) else
+                        if i % spawnBatchSize == 0 then task.wait() end
+                    end
+                end
+
+                while threadsCompleted < totalNeeded and coneModule.Enabled do task.wait() end
+                
+                if paintTool and #paintArgs > 0 then
+                    notify('Painting', 'Applying Material Colors...', 5, 'info')
+                    task.spawn(function() paintTool:WaitForChild("RF"):InvokeServer(paintArgs) end)
+                end
+
+                notify('Hull Engine', '✅ Aerodynamic Structure Complete!', 5, 'info')
+                coneModule:Toggle()
+            end)
+        end
+    })
+
+    -- =========================================================================
+    -- UI COMPONENT BINDINGS
+    -- =========================================================================
+    
+    previewToggle = coneModule:CreateToggle({ Name = 'Live 3D Preview', Default = false, Function = LiveUpdatePreview })
+
+    styleDrop = coneModule:CreateDropdown({
+        Name = 'Architecture Style',
+        List = {'Hollow (Smooth Shell)', 'Solid (Stepped Slices)'},
+        Function = function(val)
+            thickSlider.Object.Visible = (val == 'Hollow (Smooth Shell)')
+            LiveUpdatePreview()
+        end
+    })
+
+    scaleSlider = coneModule:CreateSlider({ Name = 'Master Scale Multiplier (x)', Min = 1, Max = 10, Default = 1, Function = LiveUpdatePreview })
+    
+    baseRadSlider = coneModule:CreateSlider({ Name = 'Base Radius (Bottom)', Min = 1, Max = 150, Default = 30, Function = LiveUpdatePreview })
+    topRadSlider = coneModule:CreateSlider({ Name = 'Top Radius (Peak)', Min = 0, Max = 150, Default = 0, Tooltip = 'Set > 0 for Frustrums / Cylinders', Function = LiveUpdatePreview })
+    heightSlider = coneModule:CreateSlider({ Name = 'Total Elevation Height', Min = 5, Max = 300, Default = 60, Function = LiveUpdatePreview })
+
+    curveSlider = coneModule:CreateSlider({ 
+        Name = 'Profile: Convex [-] to Concave [+]', 
+        Min = -100, Max = 100, Default = 0, 
+        Tooltip = '-100 = Dome/Bullet, 0 = Straight Cone, +100 = Trumpet/Horn',
+        Function = LiveUpdatePreview 
+    })
+
+    layerSlider = coneModule:CreateSlider({ Name = 'Vertical Resolution (Layers)', Min = 2, Max = 100, Default = 20, Function = LiveUpdatePreview })
+    segmentSlider = coneModule:CreateSlider({ Name = 'Horizontal Roundness (Segments)', Min = 4, Max = 64, Default = 24, Function = LiveUpdatePreview })
+    thickSlider = coneModule:CreateSlider({ Name = 'Shell Thickness', Min = 1, Max = 20, Default = 2, Function = LiveUpdatePreview })
+
+    uprightToggle = coneModule:CreateToggle({ Name = 'Lay Flat on Side', Default = false, Function = LiveUpdatePreview })
+    colorDrop = coneModule:CreateDropdown({ Name = 'Material Finish', List = {'None', 'Aerospace White', 'Steel / Grey', 'Vertical Rainbow', 'Radial Rainbow'}, Function = LiveUpdatePreview })
+
+    offX = coneModule:CreateSlider({ Name = 'Offset Adjust X', Min = -500, Max = 500, Default = 0, Function = LiveUpdatePreview })
+    offY = coneModule:CreateSlider({ Name = 'Offset Adjust Y', Min = -500, Max = 500, Default = 0, Function = LiveUpdatePreview })
+    offZ = coneModule:CreateSlider({ Name = 'Offset Adjust Z', Min = -500, Max = 500, Default = 0, Function = LiveUpdatePreview })
+
+    blockDropdown = coneModule:CreateDropdown({ Name = 'Material Block Type', List = getAvailableBlocks(), Function = function() end})
+    speedSlider = coneModule:CreateSlider({ Name = 'Assembly Speed', Min = 100, Max = 1000, Default = 500, Function = function() end })
+    maxModeToggle = coneModule:CreateToggle({ Name = 'Instant Max Mode (Lag Risk)', Default = false, Function = function() end })
+
+end)
+
+
+
+
+
+
+
 
 
 
