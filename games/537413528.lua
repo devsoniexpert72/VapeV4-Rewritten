@@ -1303,7 +1303,6 @@ end)
 
 
 
-
 run(function()
     local vape = shared.vape
     if not vape then return end
@@ -1313,7 +1312,7 @@ run(function()
     local lp = game:GetService("Players").LocalPlayer
 
     local shapeModule
-    local shapeDropdown, alignDropdown, voxelToggle
+    local shapeDropdown, alignDropdown, voxelToggle, infiniteToggle
     local radiusSlider, heightSlider, sidesSlider, thickSlider, minorRadSlider
     local offX, offY, offZ
     
@@ -1357,7 +1356,38 @@ run(function()
     end
 
     -- =========================================================================
-    -- ADVANCED MATHEMATICAL SHAPE ENGINE
+    -- INFINITE BLOCKS GLITCH ROUTINE
+    -- =========================================================================
+    local function executeBlockGlitch(blockType, buildRF, scaleRF, plotZone, playerBlocksFolder)
+        notify('Glitch Active', 'Executing float anomaly to bypass limits for ' .. blockType .. '...', 3, 'warning')
+        
+        -- Exact CFrame values decoded from SuperSpy remote logs
+        local glitchCF_Build = CFrame.new(0, -3.00000001e+38, 0, 0, 0, 1, 0, 1, 0, -1, 0, 0)
+        local glitchCF_Scale = CFrame.new(221.83432, -3.00000001e+38, -68.7067871, 1, 0, 0, 0, 1, 0, 0, 0, 1)
+        local glitchSize_Scale = Vector3.new(298.9999694824219, 1.1754999560161448e-38, 251.7989959716797)
+        
+        -- Trigger anomaly placement
+        buildRF:InvokeServer(blockType, 50, plotZone, glitchCF_Build, true)
+        task.wait(0.1)
+        
+        -- Locate anomaly block by checking extreme negative Y bound
+        local anomalyBlock
+        for _, b in ipairs(playerBlocksFolder:GetChildren()) do
+            if b.Name == blockType and b:GetPivot().Position.Y < -100000 then
+                anomalyBlock = b
+                break
+            end
+        end
+        
+        -- Flatten and glitch scale to bypass inventory check logic internally
+        if anomalyBlock then
+            scaleRF:InvokeServer(anomalyBlock, glitchSize_Scale, glitchCF_Scale)
+        end
+        task.wait(0.2)
+    end
+
+    -- =========================================================================
+    -- RE-ENGINEERED SMOOTH SHAPE ENGINE (Equal-Area Projection)
     -- =========================================================================
     local function GenerateShapeData()
         local parts = {}
@@ -1374,7 +1404,6 @@ run(function()
         local rDens = doRainbow and (rbDensity.Value / 10) or 1
         local rSat = doRainbow and (rbSaturation.Value / 100) or 1
         local rBri = doRainbow and (rbBrightness.Value / 100) or 1
-        
         local baseOffset = CFrame.new(offX.Value, offY.Value, offZ.Value)
 
         local function getAdjustedR(baseR)
@@ -1385,21 +1414,12 @@ run(function()
 
         local function getColor(index, total, y, max_y)
             if not doRainbow then return Color3.new(1,1,1) end
-            local hue = 0
-            if rMode == "By Part" then
-                hue = (index / total) * rDens
-            else
-                local safe_max = math.max(max_y, 0.1)
-                hue = ((y + safe_max) / (safe_max * 2)) * rDens
-            end
+            local hue = (rMode == "By Part") and ((index / total) * rDens) or (((y + max_y) / (max_y * 2)) * rDens)
             return Color3.fromHSV(hue % 1, rSat, rBri)
         end
 
         local adjusted_R = math.max(getAdjustedR(R), 0.1)
 
-        -- -----------------------------------------------------------------
-        -- SMOOTH 3D SHELL GENERATION (Non-Voxel)
-        -- -----------------------------------------------------------------
         if not isVoxel then
             if shape == "Circle (Ring)" or shape == "Cylinder" then
                 local actual_H = (shape == "Circle (Ring)") and thick or H
@@ -1415,37 +1435,32 @@ run(function()
                 end
 
             elseif shape == "Sphere" or shape == "Dome" then
-                local lat_steps = math.max(4, math.floor(sides / 2))
-                local start_i = (shape == "Dome") and math.floor(lat_steps / 2) or 0
-                local seg_height = adjusted_R * (math.pi / lat_steps)
-                local temp_parts = {}
+                local lat_steps = math.max(4, math.floor(sides * 0.75))
+                local start_i = (shape == "Dome") and math.floor(lat_steps/2) or 0
+                local total_parts = 0
+                for i = start_i, lat_steps - 1 do total_parts = total_parts + sides end
                 
-                -- Dynamic Step Calculation to prevent polar bunching
+                local part_idx = 0
                 for i = start_i, lat_steps - 1 do
-                    local phi1 = -(math.pi / 2) + (i * math.pi / lat_steps)
-                    local phi2 = -(math.pi / 2) + ((i + 1) * math.pi / lat_steps)
+                    local phi1 = -(math.pi/2) + (i * math.pi / lat_steps)
+                    local phi2 = -(math.pi/2) + ((i+1) * math.pi / lat_steps)
                     local mid_phi = (phi1 + phi2) / 2
                     
+                    local seg_height = adjusted_R * (math.pi / lat_steps)
                     local r_lat = adjusted_R * math.cos(mid_phi)
+                    
+                    -- Dynamic Side adjustment for poles to maintain equal-area smoothness
+                    local current_sides = math.max(3, math.floor(sides * math.cos(mid_phi)))
+                    local seg_width = 2 * r_lat * math.tan(math.pi / current_sides)
                     local y_pos = adjusted_R * math.sin(mid_phi)
                     
-                    -- Scale down sides proportionally to the circumference of the ring
-                    local ring_sides = math.max(4, math.round(sides * math.cos(mid_phi)))
-                    local seg_width = 2 * r_lat * math.tan(math.pi / ring_sides)
-                    
-                    for j = 1, ring_sides do
-                        local theta = j * (math.pi * 2) / ring_sides
+                    for j = 1, current_sides do
+                        part_idx = part_idx + 1
+                        local theta = j * (math.pi * 2) / current_sides
                         local cf = baseOffset * CFrame.Angles(0, theta, 0) * CFrame.Angles(mid_phi, 0, 0) * CFrame.new(0, 0, -adjusted_R)
                         local size = Vector3.new(seg_width, seg_height, thick)
-                        table.insert(temp_parts, {CFrame = cf, Size = size, y_pos = y_pos})
+                        table.insert(parts, {CFrame = cf, Size = size, Color = getColor(part_idx, total_parts, y_pos, adjusted_R)})
                     end
-                end
-
-                -- Map out colors uniformly over the clean generation array
-                local total_parts = #temp_parts
-                for idx, pData in ipairs(temp_parts) do
-                    local color = getColor(idx, total_parts, pData.y_pos, adjusted_R)
-                    table.insert(parts, {CFrame = pData.CFrame, Size = pData.Size, Color = color})
                 end
 
             elseif shape == "Torus" then
@@ -1487,10 +1502,6 @@ run(function()
                     table.insert(parts, {CFrame = cf, Size = size, Color = color})
                 end
             end
-
-        -- -----------------------------------------------------------------
-        -- VOXEL GENERATION (Layered Stacking)
-        -- -----------------------------------------------------------------
         else
             local function addVoxelRing(y, r, total_rings, current_ring)
                 if r <= 0.1 then return end
@@ -1616,6 +1627,8 @@ run(function()
                 local baseBlock = blockDropdown.Value
 
                 local function getValidBlock()
+                    if infiniteToggle.Enabled then return baseBlock end
+                    
                     local amtUsed = consumedTracker[baseBlock] or 0
                     if getCount(baseBlock) > amtUsed then 
                         consumedTracker[baseBlock] = amtUsed + 1
@@ -1658,11 +1671,18 @@ run(function()
                         break
                     end
 
+                    -- Trigger infinite blocks anomaly if count is zero and toggle is active
+                    if infiniteToggle.Enabled and getCount(currentBlockType) <= 1 then
+                        executeBlockGlitch(currentBlockType, buildRF, scaleRF, plotZone, playerBlocksFolder)
+                    end
+
                     local savedRelativeCFrame = CFrame.new(0, surfaceY, 0) * pData.CFrame
                     local absoluteTargetCFrame = plotZone.CFrame:ToWorldSpace(savedRelativeCFrame)
                     
                     task.spawn(function()
                         local currentTotalCount = getCount(currentBlockType)
+                        if infiniteToggle.Enabled then currentTotalCount = 50 end
+                        
                         buildRF:InvokeServer(currentBlockType, currentTotalCount, plotZone, savedRelativeCFrame, true, absoluteTargetCFrame, false)
                         
                         local spawnedBlock = nil
@@ -1727,7 +1747,6 @@ run(function()
         end
     })
 
-    -- Automatic Sides Refresh
     shapeDropdown = shapeModule:CreateDropdown({ 
         Name = 'Shape Type', 
         List = {'Circle (Ring)', 'Cylinder', 'Sphere', 'Dome', 'Pyramid', 'Torus'}, 
@@ -1743,7 +1762,8 @@ run(function()
         end 
     })
 
-    voxelToggle = shapeModule:CreateToggle({ Name = 'Voxel Shapes (Minecraft Style)', Default = false, Function = LiveUpdatePreview, Tooltip = 'If false, creates ultra-smooth 3D models using angled facets.' })
+    voxelToggle = shapeModule:CreateToggle({ Name = 'Voxel Shapes (Minecraft Style)', Default = false, Function = LiveUpdatePreview, Tooltip = 'If false, creates ultra-smooth 3D models using equal-area geometry.' })
+    infiniteToggle = shapeModule:CreateToggle({ Name = 'Infinite Blocks (Glitch)', Default = false, Function = function(val) if val then notify('Warning', 'Using out-of-bounds float anomaly to bypass inventory limit.', 5, 'alert') end end })
 
     radiusSlider = shapeModule:CreateSlider({ Name = 'Radius / Base Size', Min = 2, Max = 300, Default = 20, Function = LiveUpdatePreview })
     heightSlider = shapeModule:CreateSlider({ Name = 'Height', Min = 2, Max = 300, Default = 30, Function = LiveUpdatePreview })
@@ -1753,7 +1773,6 @@ run(function()
     thickSlider = shapeModule:CreateSlider({ Name = 'Block Thickness', Min = 1, Max = 20, Default = 2, Function = LiveUpdatePreview })
     alignDropdown = shapeModule:CreateDropdown({ Name = 'Alignment', List = {'Middle', 'Outside', 'Inside'}, Function = LiveUpdatePreview })
     
-    -- Rainbow System
     rainbowToggle = shapeModule:CreateToggle({ 
         Name = 'Rainbow Gradient', 
         Default = false, 
@@ -1782,6 +1801,8 @@ run(function()
     maxModeToggle = shapeModule:CreateToggle({ Name = 'Max Mode (Lag Warning)', Default = false, Function = function() end })
 
 end)
+
+
 
 
 
